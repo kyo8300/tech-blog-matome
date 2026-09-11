@@ -1,0 +1,39 @@
+{
+  "name": "tech-blog-matome",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check-feeds": "tsx scripts/check-feeds.ts",
+    "gen-icons": "node scripts/gen-icons.mjs",
+    "smoke": "node scripts/smoke-extension.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.125",
+    "@mozilla/readability": "^0.6",
+    "dexie": "^4.4",
+    "dexie-react-hooks": "^4.4",
+    "fast-xml-parser": "^5.11",
+    "react": "^19.3",
+    "react-dom": "^19.3",
+    "zod": "^4.6"
+  },
+  "devDependencies": {
+    "@crxjs/vite-plugin": "^2.7",
+    "@types/chrome": "^0.2",
+    "@types/node": "^22",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^5.2",
+    "jsdom": "^30",
+    "playwright": "^1.63",
+    "tsx": "^4.23",
+    "typescript": "^5.9",
+    "vite": "^7.3",
+    "vitest": "^4.1"
+  }
+}

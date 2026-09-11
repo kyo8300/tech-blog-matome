@@ -39,11 +39,13 @@ devDependencies: `@crxjs/vite-plugin ^2.7`, `@types/chrome ^0.2`, `@types/node ^
 
 npm scripts: `dev` / `build` / `typecheck`（tsc --noEmit）/ `test`（vitest run）/ `check-feeds`（tsx scripts/check-feeds.ts）/ `gen-icons` / `smoke`（Playwright煙テスト）
 
+`.npmrc` に `legacy-peer-deps=true` を置く。npm 10.9 が vitest 4 の任意 peer（`@vitest/browser-playwright` → `playwright`）を解決する際に `Cannot read properties of null (reading 'edgesOut')` でクラッシュする npm 側のバグの回避で、バージョン範囲自体は上記のまま変更しない。
+
 ## 3. ファイル構成
 
 ```
 tech-blog-matome/
-├── package.json  tsconfig.json  vite.config.ts  vitest.config.ts  .gitignore  README.md（日本語）
+├── package.json  tsconfig.json  vite.config.ts  vitest.config.ts  .gitignore  .npmrc  README.md（日本語）
 ├── manifest.config.ts            # crxjs defineManifest
 ├── public/icons/{16,48,128}.png  # scripts/gen-icons.mjs で生成（依存なしの最小PNGエンコーダ）
 ├── scripts/check-feeds.ts        # Node: 15本のフィード（+代替URL）を検証して表を出す
