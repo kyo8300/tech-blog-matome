@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Redesigning Our Ingestion Pipeline for Scale</title>
+</head>
+<body>
+  <nav>
+    <ul>
+      <li><a href="/">Home</a></li>
+      <li><a href="/blog">Blog</a></li>
+      <li><a href="/about">About</a></li>
+      <li><a href="/careers">Careers</a></li>
+    </ul>
+  </nav>
+  <header>
+    <div class="site-banner">Subscribe to our newsletter for weekly engineering updates!</div>
+  </header>
+  <div class="layout">
+    <aside class="sidebar">
+      <h3>Related posts</h3>
+      <ul>
+        <li><a href="/blog/post-1">Scaling our database layer</a></li>
+        <li><a href="/blog/post-2">Improving build times</a></li>
+        <li><a href="/blog/post-3">A guide to our on-call process</a></li>
+      </ul>
+      <div class="ad">Advertisement placeholder</div>
+    </aside>
+    <main>
+      <article>
+        <h1>Redesigning Our Ingestion Pipeline for Scale</h1>
+        <p class="byline">By the Example Engineering Team — August 2026</p>
+      <p>When our team set out to redesign the ingestion pipeline, we knew the biggest risk was not the code itself but the migration path. Thousands of producers were already writing to the old system every second, and any downtime would show up immediately in customer dashboards.</p>
+      <p>We started by instrumenting the existing pipeline with detailed tracing so that we could understand exactly where time was being spent. It turned out that serialization overhead, not network latency, was the dominant cost in the hot path, which was surprising to most of the team.</p>
+      <p>The first prototype used a columnar in-memory format instead of row-oriented JSON, and early benchmarks showed a four times reduction in CPU usage for the encode step alone. Decoding improved by a similar margin once we cached schema lookups instead of resolving them per message.</p>
+      <p>Rolling this out safely meant running the new and old pipelines in parallel for several weeks, comparing outputs record by record. We found a handful of edge cases involving null handling and timezone conversion that would have caused subtle data corruption if shipped directly to production.</p>
+      <p>Once confidence was high, we moved traffic over gradually, starting with one percent of low-priority producers and watching error budgets closely before expanding further. The gradual rollout let us catch a memory leak in the new consumer library long before it affected the majority of traffic.</p>
+      <p>In the end the migration took about ten weeks from prototype to full rollout, roughly twice as long as we initially estimated, mostly because of the extra validation work. Looking back, the parallel-run approach was the single decision that saved us from a much more painful incident.</p>
+      <p>We are now applying the same ingestion format to several other internal services, and early results suggest similar savings in both latency and infrastructure cost across the board, which has made the investment easy to justify to leadership going forward.</p>
+      </article>
+    </main>
+  </div>
+  <footer>
+    <p>&copy; 2026 Example Engineering. All rights reserved.</p>
+    <ul>
+      <li><a href="/privacy">Privacy</a></li>
+      <li><a href="/terms">Terms</a></li>
+    </ul>
+  </footer>
+</body>
+</html>

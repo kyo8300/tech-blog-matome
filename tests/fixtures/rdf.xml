@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rdf:RDF
+  xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+  xmlns:dc="http://purl.org/dc/elements/1.1/"
+  xmlns="http://purl.org/rss/1.0/">
+  <channel rdf:about="https://rdf.example.com/">
+    <title>RDF Legacy Blog</title>
+    <link>https://rdf.example.com/</link>
+    <description>An RSS 1.0 (RDF) feed for parser coverage</description>
+  </channel>
+  <item rdf:about="https://rdf.example.com/posts/legacy-post-one">
+    <title>Legacy Post One</title>
+    <link>https://rdf.example.com/posts/legacy-post-one</link>
+    <description>The first legacy post, described using RDF/RSS 1.0.</description>
+    <dc:date>2026-07-10T10:00:00Z</dc:date>
+    <dc:subject>Legacy</dc:subject>
+  </item>
+  <item rdf:about="https://rdf.example.com/posts/legacy-post-two">
+    <title>Legacy Post Two</title>
+    <link>https://rdf.example.com/posts/legacy-post-two</link>
+    <description>The second legacy post.</description>
+    <dc:date>2026-07-11T10:00:00Z</dc:date>
+  </item>
+</rdf:RDF>

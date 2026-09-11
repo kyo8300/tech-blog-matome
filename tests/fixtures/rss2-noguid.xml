@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+<channel>
+  <title>No Guid Blog</title>
+  <link>https://noguid.example.com/</link>
+  <description>Feed without guid elements</description>
+  <item>
+    <title>Post Without A Guid</title>
+    <link>https://noguid.example.com/posts/post-without-a-guid</link>
+    <pubDate>Wed, 05 Aug 2026 12:30:00 +0000</pubDate>
+    <category>General</category>
+    <description>This item intentionally omits a guid element.</description>
+  </item>
+</channel>
+</rss>

@@ -198,8 +198,7 @@ runPipeline(trigger)
         → fetchArticleHtml(url, 20s, 3MB上限, content-type が text/html でなければ null)
         → offscreen で Readability → text
         → text が 800 字未満なら rssSummary を使う（contentSource="rss"）。それも 200 字未満なら contentSource="none"（タイトル+概要で要約）
-        → maxContentChars で切り詰め
-        → summarizeArticle() → status="done", summary, model, summarizedAt
+        → summarizeArticle(text, contentSource, maxContentChars) → status="done", summary, model, summarizedAt（切り詰めは summarizeArticle → buildSummaryUser の1か所で行う。DB に保存する contentText も maxContentChars まで）
         → 失敗: status="error", error=message, attempts++
       progress.articlesDone++ → PROGRESS 送信
  6. offscreen を閉じる → notifyRun(newCount, doneCount, errorCount) → settings.lastRunAt=now → keepAlive.stop() → running=false
@@ -253,7 +252,7 @@ const msg = await client.beta.messages.create({
   ...(USE_FALLBACKS ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" } : {}),
   system: SUMMARY_SYSTEM,                                         // 固定文字列（キャッシュ効率）
   output_config: { effort: settings.effort, format: zodOutputFormat(SummarySchema) },
-  messages: [{ role: "user", content: buildSummaryUser(article, text, contentSource) }],
+  messages: [{ role: "user", content: buildSummaryUser(article, text, contentSource, maxContentChars) }],  // 切り詰めはここで1回だけ
 });
 if (msg.stop_reason === "refusal") throw new SummaryRefusedError(msg.stop_details?.category, msg.stop_details?.explanation);
 if (msg.stop_reason === "max_tokens") throw new Error("出力が長すぎて途中で切れました");
@@ -283,7 +282,7 @@ const final = await stream.finalMessage();
 // refusal → 「Claudeが回答を拒否しました（カテゴリ: …）」を表示し、assistant ターンは保存しない
 ```
 チャット system: `あなたは技術記事についての質問に日本語で答えるアシスタントです。以下の記事の内容に基づいて回答し、記事に書かれていない事柄は「記事には記載がありません」と明示したうえで一般知識として補足してください。` + メタ情報 + `<article>…</article>`。記事ブロックがキャッシュ対象の安定プレフィックスになる。
-- APIキー検証: `client.models.retrieve(settings.model)`（出力トークンを消費しない）。`AuthenticationError`→「APIキーが無効です」、`NotFoundError`→「モデルIDが見つかりません」、`RateLimitError`→「レート制限中です」、その他 `APIError`→ status と message。
+- APIキー検証: `client.models.retrieve(settings.model)`（出力トークンを消費しない）。エラー変換は `instanceof` を most-specific-first で判定（文字列マッチ禁止）: `AuthenticationError`→「APIキーが無効です」、`NotFoundError`→「モデルIDが見つかりません」、`RateLimitError`→「レート制限中です」、`APIConnectionError`→「APIに接続できません（ネットワークを確認してください）」（`APIError` のサブクラスで status が無いので `APIError` より先に判定）、その他 `APIError`→ status と message。
 - 料金目安（README に記載）: 1記事あたり入力 約5k〜15k トークン + 出力 約2k。Opus 5 で数円〜10円程度。
 
 ## 12. UI

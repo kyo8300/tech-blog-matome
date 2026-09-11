@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Example Atom Engineering Blog</title>
+  <link href="https://example.org/feed.atom" rel="self" type="application/atom+xml"/>
+  <link href="https://example.org/blog" rel="alternate" type="text/html"/>
+  <id>https://example.org/</id>
+  <updated>2026-09-03T09:00:00Z</updated>
+  <entry>
+    <title type="html">Rewriting Our &lt;b&gt;Deploy&lt;/b&gt; Pipeline</title>
+    <link href="https://example.org/feed/rewriting-deploy-pipeline.atom" rel="self" type="application/atom+xml"/>
+    <link href="https://example.org/blog/rewriting-deploy-pipeline" rel="alternate" type="text/html"/>
+    <id>https://example.org/blog/rewriting-deploy-pipeline</id>
+    <published>2026-09-03T09:00:00Z</published>
+    <updated>2026-09-03T10:00:00Z</updated>
+    <category term="Infrastructure"/>
+    <category term="CI/CD"/>
+    <summary>We rewrote our deploy pipeline from scratch.</summary>
+    <content type="html"><![CDATA[<p>Details of the new deploy pipeline architecture and rollout plan.</p>]]></content>
+  </entry>
+  <entry>
+    <title>Second Entry Without Typed Title</title>
+    <link href="https://example.org/blog/second-entry" rel="alternate" type="text/html"/>
+    <id>https://example.org/blog/second-entry</id>
+    <published>2026-09-04T09:00:00Z</published>
+    <category term="Backend"/>
+    <summary>A second entry for parser coverage.</summary>
+  </entry>
+  <entry>
+    <title>Third Entry With Only A Self Link</title>
+    <link href="https://example.org/feed/third-entry.atom" rel="self" type="application/atom+xml"/>
+    <id>https://example.org/blog/third-entry</id>
+    <published>2026-09-05T09:00:00Z</published>
+    <summary>No alternate link is present, so the parser should fall back to the first href.</summary>
+  </entry>
+</feed>

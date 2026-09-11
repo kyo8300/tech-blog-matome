@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:dc="http://purl.org/dc/elements/1.1/">
+<channel>
+  <title>Example Tech Blog</title>
+  <link>https://example.com/blog</link>
+  <description>Example engineering blog feed for tests</description>
+  <item>
+    <title>Scaling Our Database Layer</title>
+    <link>https://example.com/blog/scaling-database-layer</link>
+    <guid isPermaLink="false">https://example.com/blog/scaling-database-layer</guid>
+    <pubDate>Mon, 01 Sep 2026 09:00:00 +0000</pubDate>
+    <category>Engineering</category>
+    <category>Databases</category>
+    <description>&lt;p&gt;A short summary of the scaling work.&lt;/p&gt;</description>
+    <content:encoded><![CDATA[
+      <p>We recently rearchitected our database layer to handle 10x the traffic.</p>
+      <p>This post covers the approach, the trade-offs, and the results we saw in production.</p>
+      <p>It includes <strong>bold</strong> text and a <a href="https://example.com/related">related link</a>.</p>
+    ]]></content:encoded>
+  </item>
+  <item>
+    <title>Improving Build Times</title>
+    <link>https://example.com/blog/improving-build-times</link>
+    <guid isPermaLink="false">https://example.com/blog/improving-build-times</guid>
+    <pubDate>Tue, 02 Sep 2026 09:00:00 +0000</pubDate>
+    <category>Developer Experience</category>
+    <description>&lt;p&gt;How we cut CI build times in half.&lt;/p&gt;</description>
+    <content:encoded><![CDATA[<p>Our CI pipeline was slow, so we profiled it and found the bottlenecks.</p>]]></content:encoded>
+  </item>
+</channel>
+</rss>

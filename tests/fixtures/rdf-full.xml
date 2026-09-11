@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rdf:RDF
+  xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+  xmlns:dc="http://purl.org/dc/elements/1.1/"
+  xmlns:content="http://purl.org/rss/1.0/modules/content/"
+  xmlns="http://purl.org/rss/1.0/">
+  <channel rdf:about="https://rdf.example.com/">
+    <title>RDF Legacy Blog (full content)</title>
+    <link>https://rdf.example.com/</link>
+    <description>An RSS 1.0 (RDF) feed exercising content:encoded and category</description>
+  </channel>
+  <item rdf:about="https://rdf.example.com/posts/full-post">
+    <title>Full Content Post</title>
+    <link>https://rdf.example.com/posts/full-post</link>
+    <description>A short description that should be ignored because content:encoded is present.</description>
+    <content:encoded><![CDATA[<p>This is the full article body from content:encoded.</p>]]></content:encoded>
+    <dc:date>2026-07-12T10:00:00Z</dc:date>
+    <category>Legacy</category>
+    <category>RDF</category>
+  </item>
+</rdf:RDF>
