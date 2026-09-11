@@ -1,0 +1,231 @@
+/* 設定ページのスタイル。外部フォント/CDNは使わずシステムフォントのみ。ライト/ダーク両対応。 */
+
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --fg: #1a1a1a;
+  --muted: #666666;
+  --border: #d9d9d9;
+  --card-bg: #f7f7f8;
+  --accent: #2f6feb;
+  --accent-fg: #ffffff;
+  --ok: #1a7f37;
+  --error: #cf222e;
+  --danger: #cf222e;
+  --danger-fg: #ffffff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1e1e1e;
+    --fg: #e6e6e6;
+    --muted: #a0a0a0;
+    --border: #3a3a3a;
+    --card-bg: #2a2a2a;
+    --accent: #6ea8fe;
+    --accent-fg: #0d1117;
+    --ok: #3fb950;
+    --error: #ff7b72;
+    --danger: #ff7b72;
+    --danger-fg: #2b0000;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family:
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    "Hiragino Kaku Gothic ProN",
+    "Hiragino Sans",
+    Meiryo,
+    system-ui,
+    sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.options-page {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 32px 24px 80px;
+}
+
+h1 {
+  font-size: 22px;
+  margin: 0 0 24px;
+}
+
+h2 {
+  font-size: 16px;
+  margin: 0 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+section {
+  margin-bottom: 32px;
+}
+
+.field {
+  margin-bottom: 14px;
+}
+
+.field label {
+  display: block;
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+input[type="text"],
+input[type="password"],
+input[type="number"] {
+  flex: 1;
+  min-width: 160px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 14px;
+}
+
+input[type="number"] {
+  flex: none;
+  width: 120px;
+}
+
+select {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 14px;
+}
+
+.custom-model {
+  margin-top: 8px;
+  width: 100%;
+}
+
+button {
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-size: 14px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+button.secondary {
+  background: transparent;
+  color: var(--fg);
+  border-color: var(--border);
+}
+
+button.danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--danger-fg);
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.toggle input {
+  width: 16px;
+  height: 16px;
+}
+
+.result {
+  margin: 8px 0 0;
+  font-size: 13px;
+}
+
+.result.ok {
+  color: var(--ok);
+}
+
+.result.error {
+  color: var(--error);
+}
+
+.hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.source-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.source-row {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card-bg);
+  margin-bottom: 10px;
+}
+
+.source-row-main {
+  margin-bottom: 8px;
+}
+
+.feed-url {
+  flex: 1;
+  min-width: 200px;
+}
+
+.save-bar {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 0;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  margin-bottom: 32px;
+}
+
+.danger-zone {
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.danger-zone h2 {
+  border-bottom: none;
+  color: var(--danger);
+}
