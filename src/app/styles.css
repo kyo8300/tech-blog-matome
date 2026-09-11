@@ -1,0 +1,500 @@
+/* Tech Blog まとめ - アプリページのスタイル。
+   システムフォント・ライト/ダーク両対応・外部フォント/CDN不使用。 */
+
+:root {
+  --bg: #f6f7f9;
+  --bg-elevated: #ffffff;
+  --bg-hover: #eef1f5;
+  --text: #1a1c20;
+  --text-muted: #62697a;
+  --border: #dfe3ea;
+  --accent: #2563eb;
+  --accent-contrast: #ffffff;
+  --danger: #c0392b;
+  --danger-bg: #fdecea;
+  --chip-bg: #eef1f5;
+  --chip-text: #33475b;
+  --chip-selected-bg: #2563eb;
+  --chip-selected-text: #ffffff;
+  --unread-dot: #2563eb;
+  --bubble-user-bg: #2563eb;
+  --bubble-user-text: #ffffff;
+  --bubble-assistant-bg: #eef1f5;
+  --bubble-assistant-text: #1a1c20;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16181d;
+    --bg-elevated: #1e2127;
+    --bg-hover: #262a32;
+    --text: #e7e9ee;
+    --text-muted: #9aa1b0;
+    --border: #333843;
+    --accent: #5b8def;
+    --accent-contrast: #0b0d10;
+    --danger: #ff6b5e;
+    --danger-bg: #3a2020;
+    --chip-bg: #262a32;
+    --chip-text: #c4cad6;
+    --chip-selected-bg: #5b8def;
+    --chip-selected-text: #0b0d10;
+    --unread-dot: #5b8def;
+    --bubble-user-bg: #3a5cc4;
+    --bubble-user-text: #ffffff;
+    --bubble-assistant-bg: #262a32;
+    --bubble-assistant-text: #e7e9ee;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Hiragino Kaku Gothic ProN",
+    "Yu Gothic UI", "Meiryo", sans-serif;
+}
+
+a {
+  color: var(--accent);
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+  color: var(--text);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.45em 0.9em;
+}
+
+button:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+textarea,
+input[type="text"] {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5em 0.7em;
+}
+
+.page {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 1.25rem 1rem 3rem;
+}
+
+.page.has-detail {
+  max-width: 1200px;
+}
+
+.app-header h1 {
+  font-size: 1.4rem;
+  margin: 0 0 1rem;
+}
+
+/* --- Toolbar --- */
+
+.toolbar {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.8rem 1rem;
+  margin-bottom: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.toolbar-message {
+  color: var(--danger);
+  font-size: 0.85rem;
+}
+
+.toolbar-settings {
+  margin-left: auto;
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.link-button {
+  background: none;
+  border: none;
+  color: var(--accent);
+  padding: 0.2em 0.3em;
+}
+
+.link-button:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+/* --- チップ（ソースフィルタ・状態フィルタ・tags） --- */
+
+.source-filter,
+.status-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+  font-size: 0.8rem;
+  border-radius: 999px;
+  padding: 0.3em 0.8em;
+  background: var(--chip-bg);
+  color: var(--chip-text);
+  border: 1px solid transparent;
+}
+
+button.chip {
+  border: 1px solid var(--border);
+}
+
+.chip-selected {
+  background: var(--chip-selected-bg);
+  color: var(--chip-selected-text);
+  border-color: transparent;
+}
+
+.chip-status {
+  margin-top: 0.4rem;
+}
+
+.chip-error {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.chip-error button {
+  font-size: 0.75rem;
+  padding: 0.15em 0.6em;
+}
+
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.5rem;
+}
+
+.tag {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  background: var(--chip-bg);
+  border-radius: 4px;
+  padding: 0.15em 0.5em;
+}
+
+/* --- StatusBar --- */
+
+.status-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-bottom: 1rem;
+}
+
+.status-bar-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+  color: var(--accent);
+}
+
+.status-bar-errors {
+  color: var(--danger);
+}
+
+/* --- スピナー --- */
+
+.spinner {
+  display: inline-block;
+  width: 0.9em;
+  height: 0.9em;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  opacity: 0.7;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* --- レイアウト（一覧 + 詳細の2ペイン） --- */
+
+.layout {
+  display: block;
+}
+
+.layout.has-detail {
+  display: grid;
+  grid-template-columns: minmax(280px, 380px) 1fr;
+  gap: 1.5rem;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .layout.has-detail {
+    display: block;
+  }
+  .layout.has-detail .article-list-pane {
+    display: none;
+  }
+}
+
+/* --- ArticleList / ArticleCard --- */
+
+.empty-state {
+  color: var(--text-muted);
+  text-align: center;
+  padding: 2rem 0;
+}
+
+.article-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.article-card {
+  position: relative;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.9rem 1rem;
+  cursor: pointer;
+}
+
+.article-card:hover {
+  background: var(--bg-hover);
+}
+
+.article-card.selected {
+  border-color: var(--accent);
+}
+
+.article-card.unread::before {
+  content: "";
+  position: absolute;
+  top: 1.1rem;
+  left: -0.4rem;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--unread-dot);
+}
+
+.article-card-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin-bottom: 0.4rem;
+}
+
+.source-badge {
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.article-card.unread .article-headline {
+  font-weight: 700;
+}
+
+.article-headline {
+  font-size: 1rem;
+  margin: 0 0 0.35rem;
+}
+
+.article-brief {
+  font-size: 0.88rem;
+  color: var(--text-muted);
+  margin: 0;
+  line-height: 1.5;
+}
+
+/* --- ArticleDetail --- */
+
+.article-detail {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.2rem 1.3rem;
+}
+
+.article-detail-header {
+  margin-bottom: 0.5rem;
+}
+
+.article-detail-title {
+  margin: 0 0 0.5rem;
+  font-size: 1.2rem;
+}
+
+.article-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+  align-items: center;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-bottom: 1rem;
+}
+
+.article-detail section {
+  margin-bottom: 1rem;
+}
+
+.article-detail h3 {
+  font-size: 0.95rem;
+  margin: 0 0 0.4rem;
+}
+
+.article-digest {
+  margin: 0;
+  padding-left: 1.2rem;
+  line-height: 1.6;
+}
+
+.article-detail-text {
+  white-space: pre-wrap;
+  line-height: 1.7;
+  margin: 0;
+}
+
+.article-detail-placeholder {
+  color: var(--text-muted);
+}
+
+.note {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  background: var(--bg-hover);
+  border-radius: 6px;
+  padding: 0.5em 0.8em;
+}
+
+.error-message {
+  color: var(--danger);
+  font-size: 0.85rem;
+}
+
+/* --- ChatPanel --- */
+
+.chat-panel {
+  margin-top: 1.5rem;
+  border-top: 1px solid var(--border);
+  padding-top: 1rem;
+}
+
+.chat-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.6rem;
+}
+
+.chat-panel-header h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.chat-disabled-note {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.chat-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-bottom: 0.8rem;
+}
+
+.chat-bubble {
+  max-width: 90%;
+  padding: 0.55em 0.8em;
+  border-radius: 10px;
+  white-space: pre-wrap;
+  line-height: 1.55;
+  font-size: 0.92rem;
+}
+
+.chat-bubble-user {
+  align-self: flex-end;
+  background: var(--bubble-user-bg);
+  color: var(--bubble-user-text);
+}
+
+.chat-bubble-assistant {
+  align-self: flex-start;
+  background: var(--bubble-assistant-bg);
+  color: var(--bubble-assistant-text);
+}
+
+.chat-input-row {
+  display: flex;
+  gap: 0.6rem;
+  align-items: flex-end;
+}
+
+.chat-input-row textarea {
+  flex: 1;
+  resize: vertical;
+}
+
+/* --- 400px程度の狭幅でも崩れないように --- */
+
+@media (max-width: 480px) {
+  .page {
+    padding: 1rem 0.75rem 2rem;
+  }
+  .toolbar-settings {
+    margin-left: 0;
+  }
+  .chat-input-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
