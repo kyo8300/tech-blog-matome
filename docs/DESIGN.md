@@ -65,7 +65,7 @@ tech-blog-matome/
 └── tests/  fixtures/*.xml  feedParser urlNormalize htmlToText summarySchema prompts readability(jsdom)
 ```
 
-- `src/shared/` はどのコンテキストからも import される。DOM禁止、`chrome.*` は `settings.ts` のみ。
+- `src/shared/` はどのコンテキストからも import される。DOM禁止、`chrome.*` は `settings.ts`（storage）と `messages.ts`（runtime メッセージングのみ）に限る。
 - `src/lib/` は純粋TS。Node（scripts / vitest）でも動く。
 
 ## 4. manifest（`manifest.config.ts`）
@@ -163,7 +163,7 @@ Dexie スキーマ（`src/shared/db.ts`, version 1）:
 
 ## 7. メッセージ設計（`src/shared/messages.ts`）
 
-判別共用体 `Message` と型付き `send()` / `listen()`。SW・offscreen・ページが同じ `chrome.runtime.onMessage` を共有するので `target` フィールドで振り分ける。非同期応答は `handler().then(sendResponse); return true;`（Promise を return しない）。
+判別共用体 `Message` と型付き `send()` / `listen()`。SW・offscreen・ページが同じ `chrome.runtime.onMessage` を共有するので `target` フィールドで振り分ける。非同期応答は `handler().then(sendResponse, e => sendResponse({ ok: false, error: String(e) })); return true;`（Promise を return しない。ハンドラが reject しても必ず1回応答する）。
 
 ```ts
 type Message =
