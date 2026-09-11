@@ -127,7 +127,14 @@ export function listen(
     if (msgTarget !== target) {
       return false;
     }
-    const result = handler(msg, sender);
+    let result: Promise<unknown> | undefined;
+    try {
+      result = handler(msg, sender);
+    } catch (e) {
+      // handler が同期的に throw した場合も必ず1回 sendResponse を呼ぶ
+      sendResponse({ ok: false, error: e instanceof Error ? e.message : String(e) });
+      return true;
+    }
     if (result === undefined) {
       return false;
     }

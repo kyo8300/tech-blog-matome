@@ -1,0 +1,231 @@
+// 15本のフィード（既定では feedUrl のみ、--all-alternates で altFeedUrls も含む）に実際に fetch して
+// 表で結果を出す検証スクリプト。`npx tsx scripts/check-feeds.ts` で実行する。
+//
+// 注意: Claude Code on the web のサンドボックスは対象15ブログのドメインに egress policy で到達できない
+// （403 または接続不可）。その場合は全件エラーになり exit 1 になるのが正常な結果。実際のフィード疎通確認は
+// ユーザーのローカル環境で行うこと（CLAUDE.md「環境の制約」参照）。
+
+import { DEFAULT_SOURCES } from "../src/shared/sources";
+import { parseFeed, NotXmlError, type FeedItem } from "../src/lib/feedParser";
+import { FEED_FETCH_TIMEOUT_MS } from "../src/shared/constants";
+import { mapLimit } from "../src/lib/concurrency";
+
+const ALL_ALTERNATES = process.argv.includes("--all-alternates");
+const CONCURRENCY = 4;
+
+// フィード配信元にブラウザとして認識してもらうための UA（一部のブログは非ブラウザUAを弾く）
+const BROWSER_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+
+interface CheckTarget {
+  sourceName: string;
+  url: string;
+  isPrimary: boolean;
+}
+
+interface CheckResult {
+  sourceName: string;
+  url: string;
+  isPrimary: boolean;
+  status: string;
+  contentType: string;
+  format: string;
+  itemCount: string;
+  newest: string;
+  hasFullContent: string;
+  error: string;
+  /** exit code 判定に使う。primary URL が成功したかどうか */
+  ok: boolean;
+}
+
+function buildTargets(): CheckTarget[] {
+  const targets: CheckTarget[] = [];
+  for (const source of DEFAULT_SOURCES) {
+    targets.push({ sourceName: source.name, url: source.feedUrl, isPrimary: true });
+    if (ALL_ALTERNATES) {
+      for (const alt of source.altFeedUrls) {
+        targets.push({ sourceName: source.name, url: alt, isPrimary: false });
+      }
+    }
+  }
+  return targets;
+}
+
+function formatDate(d: Date | undefined): string {
+  if (!d) return "(日付不明)";
+  return d.toISOString().slice(0, 10);
+}
+
+function pickNewest(items: FeedItem[]): FeedItem | undefined {
+  if (items.length === 0) return undefined;
+  return items.reduce((newest, item) => {
+    if (!item.publishedAt) return newest;
+    if (!newest.publishedAt) return item;
+    return item.publishedAt > newest.publishedAt ? item : newest;
+  }, items[0]!);
+}
+
+async function fetchText(
+  url: string,
+  timeoutMs: number,
+): Promise<{ status: number; contentType: string; text: string }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      redirect: "follow",
+      headers: {
+        "User-Agent": BROWSER_UA,
+        Accept: "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
+      },
+    });
+    const text = await res.text();
+    return {
+      status: res.status,
+      contentType: res.headers.get("content-type") ?? "(不明)",
+      text,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function checkOne(target: CheckTarget): Promise<CheckResult> {
+  const base = { sourceName: target.sourceName, url: target.url, isPrimary: target.isPrimary };
+  try {
+    const { status, contentType, text } = await fetchText(target.url, FEED_FETCH_TIMEOUT_MS);
+    if (status !== 200) {
+      return {
+        ...base,
+        status: String(status),
+        contentType,
+        format: "-",
+        itemCount: "-",
+        newest: "-",
+        hasFullContent: "-",
+        error: `HTTP ${status}`,
+        ok: false,
+      };
+    }
+    try {
+      const parsed = parseFeed(text);
+      const newestItem = pickNewest(parsed.items);
+      return {
+        ...base,
+        status: String(status),
+        contentType,
+        format: parsed.format,
+        itemCount: String(parsed.items.length),
+        newest: newestItem ? `${newestItem.title} (${formatDate(newestItem.publishedAt)})` : "(記事なし)",
+        hasFullContent: newestItem?.hasFullContent ? "yes" : "no",
+        error: "",
+        ok: true,
+      };
+    } catch (e) {
+      const message = e instanceof NotXmlError ? e.message : String(e instanceof Error ? e.message : e);
+      return {
+        ...base,
+        status: String(status),
+        contentType,
+        format: "not-xml",
+        itemCount: "-",
+        newest: "-",
+        hasFullContent: "-",
+        error: message,
+        ok: false,
+      };
+    }
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    const reason = (e as { name?: string } | undefined)?.name === "AbortError" ? "タイムアウト" : message;
+    return {
+      ...base,
+      status: "ERR",
+      contentType: "-",
+      format: "-",
+      itemCount: "-",
+      newest: "-",
+      hasFullContent: "-",
+      error: reason,
+      ok: false,
+    };
+  }
+}
+
+function printTable(results: CheckResult[]): void {
+  const columns: { key: keyof CheckResult; label: string }[] = [
+    { key: "sourceName", label: "name" },
+    { key: "url", label: "URL" },
+    { key: "status", label: "status" },
+    { key: "contentType", label: "content-type" },
+    { key: "format", label: "形式" },
+    { key: "itemCount", label: "件数" },
+    { key: "newest", label: "最新タイトル+日付" },
+    { key: "hasFullContent", label: "本文全文あり" },
+    { key: "error", label: "エラー" },
+  ];
+  const widths = columns.map((col) =>
+    Math.max(col.label.length, ...results.map((r) => String(r[col.key]).length)),
+  );
+  const sep = "-+-";
+  const formatRow = (cells: string[]): string =>
+    cells.map((c, i) => c.padEnd(widths[i]!)).join(" | ");
+
+  console.log(formatRow(columns.map((c) => c.label)));
+  console.log(widths.map((w) => "-".repeat(w)).join(sep));
+  for (const r of results) {
+    console.log(formatRow(columns.map((c) => String(r[c.key]))));
+  }
+}
+
+async function main(): Promise<void> {
+  const targets = buildTargets();
+  console.log(
+    `フィード疎通確認: ${DEFAULT_SOURCES.length}ソース ${targets.length}URL${
+      ALL_ALTERNATES ? "（代替URLを含む）" : ""
+    } / タイムアウト ${FEED_FETCH_TIMEOUT_MS / 1000}s / 並列 ${CONCURRENCY}\n`,
+  );
+
+  const settled = await mapLimit(targets, CONCURRENCY, (target) => checkOne(target));
+  const results: CheckResult[] = settled.map((s, i) => {
+    if (s.status === "fulfilled") return s.value;
+    // checkOne 内で例外を捕捉しているため通常ここには来ないが、念のためのフォールバック
+    const target = targets[i]!;
+    return {
+      sourceName: target.sourceName,
+      url: target.url,
+      isPrimary: target.isPrimary,
+      status: "ERR",
+      contentType: "-",
+      format: "-",
+      itemCount: "-",
+      newest: "-",
+      hasFullContent: "-",
+      error: String(s.reason),
+      ok: false,
+    };
+  });
+
+  printTable(results);
+
+  const primaryFailed = results.filter((r) => r.isPrimary && !r.ok);
+  console.log();
+  console.log(`主URL: ${results.filter((r) => r.isPrimary).length - primaryFailed.length}/${
+    results.filter((r) => r.isPrimary).length
+  } 成功`);
+  if (primaryFailed.length > 0) {
+    console.log(
+      `失敗した主URL: ${primaryFailed.map((r) => `${r.sourceName}(${r.error})`).join(", ")}`,
+    );
+    console.log(
+      "\n注: サンドボックス環境ではブログドメインへの到達が egress policy でブロックされ、全件失敗（exit 1）が正常です。実際の疎通確認はローカル環境の `npm run check-feeds` で行ってください。",
+    );
+    process.exitCode = 1;
+  }
+}
+
+main().catch((e) => {
+  console.error("予期しないエラー:", e);
+  process.exitCode = 1;
+});

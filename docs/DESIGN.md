@@ -110,6 +110,7 @@ interface Article {
   contentText?: string; contentSource: "page" | "rss" | "none"; contentChars: number;
   summary?: Summary; status: ArticleStatus; error?: string; attempts: number;
   model?: string; summarizedAt?: number; readAt?: number;
+  summarizingAt?: number;          // status を "summarizing" にした時刻。§8-4 の孤児回収（15分）判定に使う
 }
 
 interface ChatThread {
@@ -192,7 +193,7 @@ runPipeline(trigger)
       → 未初期化なら publishedAt 最新の1件だけ、それ以外は maxNewPerSourcePerRun で上限
       → status:"new", rssSummary: htmlToText(content ?? description), contentSource:"none" で bulkAdd
       → source 更新（initialized=true, etag, lastItemCount）、progress.feedsDone++
- 4. 取り残し回収: status:"new" 全件 + 15分以上前から "summarizing" のもの（SW死亡）を "new" に戻して対象に追加
+ 4. 取り残し回収: status:"new" 全件 + `summarizingAt` が15分以上前（SUMMARIZING_STALE_MS）の "summarizing"（SW死亡）を "new" に戻して対象に追加。`summarizingAt` が無い "summarizing" も孤児として回収する
  5. SUMMARIZE（並列 summaryConcurrency）: APIキー未設定なら "new" のまま残し errors に「APIキー未設定」
       各記事: status="summarizing"
         → fetchArticleHtml(url, 20s, 3MB上限, content-type が text/html でなければ null)

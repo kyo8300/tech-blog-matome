@@ -56,6 +56,8 @@ export interface Article {
   error?: string;
   attempts: number;
   model?: string;
+  /** status を "summarizing" にした時刻（取り残し回収の経過時間判定に使う） */
+  summarizingAt?: number;
   summarizedAt?: number;
   readAt?: number;
 }
