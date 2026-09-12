@@ -50,11 +50,12 @@ tech-blog-matome/
 ├── public/icons/{16,48,128}.png  # scripts/gen-icons.mjs で生成（依存なしの最小PNGエンコーダ）
 ├── scripts/check-feeds.ts        # Node: 15本のフィード（+代替URL）を検証して表を出す
 ├── scripts/gen-icons.mjs
+├── scripts/jsdom.d.ts            # check-feeds が使う jsdom の最小アンビエント型（@types/jsdom を入れない）
 ├── scripts/smoke-extension.mjs   # Playwright: dist/ を --load-extension で起動し SW とページの描画を確認
 ├── src/
 │   ├── shared/      types.ts constants.ts sources.ts settings.ts db.ts messages.ts
-│   ├── lib/         feedParser.ts urlNormalize.ts hash.ts htmlToText.ts summarySchema.ts prompts.ts claudeClient.ts concurrency.ts
-│   ├── background/  index.ts alarms.ts pipeline.ts feedFetcher.ts articleFetcher.ts offscreenClient.ts
+│   ├── lib/         feedParser.ts urlNormalize.ts hash.ts htmlToText.ts summarySchema.ts prompts.ts claudeClient.ts concurrency.ts listingExtract.ts
+│   ├── background/  index.ts alarms.ts pipeline.ts feedFetcher.ts articleFetcher.ts listingFetcher.ts offscreenClient.ts
 │   │                summarizer.ts notifications.ts keepAlive.ts progress.ts messageRouter.ts
 │   ├── offscreen/   index.html offscreen.ts
 │   ├── app/         index.html main.tsx App.tsx styles.css
@@ -62,11 +63,11 @@ tech-blog-matome/
 │   │   └── hooks/      useArticles usePipelineProgress useChat useSettings
 │   └── options/     index.html main.tsx Options.tsx styles.css
 │                    components/ ApiKeyField ModelSelect IntervalSelect SourceRow DangerZone
-└── tests/  fixtures/*.xml  feedParser urlNormalize htmlToText summarySchema prompts readability(jsdom)
+└── tests/  fixtures/*.xml fixtures/*.html  feedParser urlNormalize htmlToText summarySchema prompts concurrency readability(jsdom) listingExtract(jsdom)
 ```
 
 - `src/shared/` はどのコンテキストからも import される。DOM禁止、`chrome.*` は `settings.ts`（storage）と `messages.ts`（runtime メッセージングのみ）に限る。
-- `src/lib/` は純粋TS。Node（scripts / vitest）でも動く。
+- `src/lib/` は純粋TS。Node（scripts / vitest）でも動く。例外として `listingExtract.ts` は引数で受け取った `Document` を操作する（グローバルの DOM には触れない。offscreen では DOMParser、scripts / tests では jsdom が渡す）。
 
 ## 4. manifest（`manifest.config.ts`）
 
@@ -96,7 +97,10 @@ interface Source {
   categoryFilter?: string[];       // <category> にこのいずれかを含む記事だけ採用（カテゴリ情報が無い場合は全件）
   initialized: boolean;            // false の間は最新1件だけ取り込む（初回バックフィル）
   etag?: string; lastModified?: string; lastFetchedAt?: number;
+  listingUrl?: string;             // フィードが無い/壊れているソース用の HTML 一覧ページ（§9.5）
+  listingLinkPattern?: string;     // 一覧ページ内で記事URLとみなす正規表現（正規化後の絶対URLに対して適用）
   lastStatus?: "ok" | "error"; lastError?: string; lastItemCount?: number;
+  lastFetchMode?: "feed" | "listing";  // 直近の実行でどちらの経路で取得したか
 }
 
 interface Summary { headline: string; brief: string; digest: string[]; detail: string; tags: string[] }
@@ -149,12 +153,12 @@ Dexie スキーマ（`src/shared/db.ts`, version 1）:
 | stripe | Stripe Blog | https://stripe.com/blog/feed.rss | `categoryFilter: ["Engineering"]`（カテゴリが無ければ全件） |
 | meta | Engineering at Meta | https://engineering.fb.com/feed/ | |
 | shopify | Shopify Engineering | https://shopify.engineering/blog.atom | Atom |
-| uber | Uber Engineering | https://www.uber.com/blog/engineering/rss/ | 2026-09 時点で 404。alt: `https://www.uber.com/en-US/blog/engineering/rss/`, `https://www.uber.com/us/en/blog/engineering/rss/`, `https://www.uber.com/blog/rss/`, `https://eng.uber.com/feed/`。記事ページがJS描画の可能性 → RSS概要フォールバック |
+| uber | Uber Engineering | https://www.uber.com/blog/engineering/rss/ | 2026-09 時点で 404（alt もすべて 404）。`listingUrl: "https://www.uber.com/us/en/blog/engineering/"`, `listingLinkPattern: "^https://www\\.uber\\.com/(?:[a-z]{2}-[A-Z]{2}/|[a-z]{2}/[a-z]{2}/)?blog/[^/]+/?$"` で §9.5 の一覧フォールバック。記事ページがJS描画の可能性 → RSS概要フォールバック |
 | airbnb | Airbnb Engineering & Data Science | https://medium.com/feed/airbnb-engineering | Medium |
 | github | GitHub Engineering | https://github.blog/engineering/feed/ | |
 | google | Chrome for Developers (Google) | https://developer.chrome.com/static/blog/feed.xml | alt: `https://developers.googleblog.com/feeds/posts/default`, `https://developers.googleblog.com/feed/` |
 | microsoft | Engineering at Microsoft | https://devblogs.microsoft.com/engineering-at-microsoft/feed/ | |
-| linkedin | LinkedIn Engineering | https://engineering.linkedin.com/blog.rss.html | 2026-09 時点で 404。alt: `https://www.linkedin.com/blog/engineering/rss`, `https://www.linkedin.com/blog/engineering/feed`, `https://engineering.linkedin.com/taxonomy/term/1/feed` |
+| linkedin | LinkedIn Engineering | https://engineering.linkedin.com/blog.rss.html | 2026-09 時点で 404。alt: `https://www.linkedin.com/blog/engineering/rss`（`/feed` は「Feed」カテゴリの HTML なので alt から外す）。`listingUrl: "https://www.linkedin.com/blog/engineering"`, `listingLinkPattern: "^https://www\\.linkedin\\.com/blog/engineering/[^/]+/[^/]+$"` で §9.5 の一覧フォールバック |
 | spotify | Spotify Engineering | https://engineering.atspotify.com/feed | |
 | pinterest | Pinterest Engineering | https://medium.com/feed/pinterest-engineering | Medium |
 | atlassian | Atlassian Engineering | https://atlassianblog.wpengine.com/feed | OPML の URL は 2026-09 時点で 404 のため差し替え。alt: `https://www.atlassian.com/blog/atlassian-engineering/feed`, `https://www.atlassian.com/blog/feed`, `https://developer.atlassian.com/blog/feed.xml` |
@@ -173,11 +177,13 @@ type Message =
   | { type: "RESUMMARIZE"; articleId: string }              // "new" を経由せず直接 summarizing に遷移して1件だけ要約
   | { type: "REFETCH_CONTENT"; articleId: string }          // 本文を再取得して再要約
   | { type: "TEST_FEED"; url: string }                      // 設定→SW。返答 FeedTestResult { ok, status, format, itemCount, newestTitle, newestDate, hasFullContent, error? }
+  | { type: "TEST_LISTING"; sourceId: string }              // 設定→SW。一覧フォールバックのテスト。返答 FeedTestResult（format は "listing"）
   | { type: "SETTINGS_CHANGED" }                            // 設定→SW。アラーム再評価
   | { type: "OPEN_APP"; articleId?: string }
   | { type: "RESET_ALL" }                                   // 全テーブル削除、sources を未初期化に
   | { type: "PROGRESS"; progress: PipelineProgress }        // SW→ページ（受信者がいなければ例外→握りつぶす）
-  | { type: "OFFSCREEN_EXTRACT"; target: "offscreen"; html: string; url: string }; // 返答 { title?, text, excerpt? }
+  | { type: "OFFSCREEN_EXTRACT"; target: "offscreen"; html: string; url: string }  // 返答 { title?, text, excerpt? }
+  | { type: "OFFSCREEN_EXTRACT_LINKS"; target: "offscreen"; html: string; url: string; pattern: string }; // 返答 { items: ListingItem[] }（§9.5）
 ```
 チャット・既読・フィルタ・記事一覧はSWを通さず、ページから Dexie / SDK を直接使う。
 
@@ -189,6 +195,7 @@ runPipeline(trigger)
  2. 設定読込 → 有効ソースを feedUrlOverrides でマージし db.sources に upsert
  3. FEEDS（並列4）: fetchFeed(url, {etag,lastModified}, 20s) → 304 なら skip
       → parseFeed(xml)（非XMLなら NotXmlError → lastStatus="error"）
+      → フィード取得/解析に失敗し source.listingUrl があれば §9.5 の一覧フォールバック（成功なら lastStatus="ok", lastFetchMode="listing"。失敗なら両方のエラーを lastError に併記）
       → categoryFilter 適用 → URL正規化+sha256 で未登録だけ抽出（db.articles.bulkGet）
       → 未初期化なら publishedAt 最新の1件だけ、それ以外は maxNewPerSourcePerRun で上限
       → status:"new", rssSummary: htmlToText(content ?? description), contentSource:"none" で bulkAdd
@@ -218,6 +225,24 @@ runPipeline(trigger)
 - Atom の link は `rel="alternate"` かつ `type="text/html"` を優先、無ければ最初の `@_href`。title が `{ "#text", "@_type": "html" }` の形なら unwrap。
 - `normalizeUrl`: host 小文字化、hash 除去、`utm_*` / `source` / `ref` / `mkt_tok` / `fbclid` / `gi` を除去、末尾スラッシュ除去、`http`→`https`。冪等であること。
 - Medium の guid（`https://medium.com/p/<hash>`）は `guid` に保存（副次キー、インデックス不要）。
+
+## 9.5 HTML 一覧フォールバック（`src/lib/listingExtract.ts`, `src/background/listingFetcher.ts`）
+
+RSS を提供しないソース（2026-09 時点で Uber / LinkedIn）向けに、一覧ページの HTML から記事リンクを拾って通常のパイプラインに流す。
+
+- 発動条件: `source.listingUrl` が設定されていて、かつフィード取得（主URL）が HTTP エラー / NotXmlError / ネットワークエラーのいずれかで失敗したとき。フィードが成功したときは使わない。
+- 取得: SW で `fetchArticleHtml(listingUrl, 20s, 3MB)`（`articleFetcher.ts` を再利用。text/html 以外は失敗扱い）。条件付き GET は使わない。
+- 抽出（offscreen、`OFFSCREEN_EXTRACT_LINKS`）: `DOMParser` で解析 → `<base href={url}>` を挿入 → `extractListingItems(doc, { baseUrl, pattern })`（`src/lib/listingExtract.ts`）。
+- `extractListingItems` の規則:
+  1. `doc.querySelectorAll("a[href]")` を文書順に走査し、`new URL(href, baseUrl)` で絶対化 → `normalizeUrl` → `new RegExp(pattern)` にマッチするものだけ候補にする。`javascript:` / `mailto:` / `#` は除外。
+  2. 記事リンクらしさの判定（どちらか満たせば採用）: (a) アンカー内に `h1`〜`h4` がある、(b) アンカーのテキスト（空白正規化後）が 20 文字以上。カテゴリやページネーションのリンクを落とすため。
+  3. タイトル: アンカー内の見出しテキスト → 無ければアンカーのテキスト → 無ければ `aria-label` / `title` 属性。空ならスキップ。
+  4. 日付: アンカー自身、または最も近い祖先 `article` / `li` / `div`（3 階層まで）の中の `time[datetime]` を `Date.parse`。無ければ `undefined`。
+  5. 正規化 URL で重複除去（先勝ち）。返り値 `ListingItem { url: string; title: string; publishedAt?: number }[]`。文書順を保つ（一覧の上ほど新しいとみなす）。
+- パイプラインへの受け渡し（`listingFetcher.ts` の `fetchListing(source): Promise<FeedItem[]>`）: `FeedItem { title, link: url, publishedAt: publishedAt ? new Date(publishedAt) : undefined, categories: [], hasFullContent: false }` に変換して §8-3 の「categoryFilter 適用 → 未登録抽出」以降に合流する。`publishedAt` 未知の記事は `Article.publishedAt = createdAt`（取得時刻）とし、未初期化ソースの「最新1件」は文書順の先頭を使う。`rssSummary` は無し（`contentSource` は本文取得の結果で決まる）。
+- 記事本文は通常どおり記事ページを Readability で抽出する。一覧ページが JS 描画のみで `<a href>` を含まない場合は 0 件になり、`lastError` に「一覧ページから記事リンクを抽出できませんでした」を記録する。
+- 設定ページ: `listingUrl` を持つソースの行に「一覧ページ抽出テスト」ボタンを出し、`TEST_LISTING` の結果を `一覧: 12件 / 最新: <title>` またはエラーで表示する。`listingUrl` の上書きは対象外（既定値のみ）。
+- `scripts/check-feeds.ts`: `listingUrl` を持つソースは主URL失敗時に一覧ページも取得し、jsdom で `extractListingItems` を実行して `形式=listing / 件数 / 最新タイトル` の行を追加する。一覧が 1 件以上取れれば、そのソースは失敗に数えない。
 
 ## 10. 本文抽出（`src/offscreen/`, `src/background/offscreenClient.ts`）
 
@@ -304,7 +329,7 @@ const final = await stream.finalMessage();
 - 要約の思考量 effort（低 / 中（既定）/ 高）
 - 自動更新間隔（6時間 / 12時間 / 24時間（既定）/ 48時間 / 無効）
 - 新着通知 ON/OFF
-- ソース一覧: 行ごとに 有効トグル・名前・フィードURL入力（上書き）・「フィード接続テスト」→ `HTTP 200 / 25件 / 本文あり / 最新: <title>` またはエラー ・「候補URLを試す」（`altFeedUrls` を順にテストし、成功したものを上書きに採用）
+- ソース一覧: 行ごとに 有効トグル・名前・フィードURL入力（上書き）・「フィード接続テスト」→ `HTTP 200 / 25件 / 本文あり / 最新: <title>` またはエラー ・「候補URLを試す」（`altFeedUrls` を順にテストし、成功したものを上書きに採用）・「一覧ページ抽出テスト」（`listingUrl` があるソースのみ。§9.5）
 - 詳細: 同時要約数（1〜4）/ 本文の最大文字数 / 1回の更新あたりの最大新着数
 - 危険な操作: 「全データを削除して初期状態に戻す」→ `RESET_ALL`（確認ダイアログ付き）
 - 保存で `chrome.storage.local` に書き `SETTINGS_CHANGED` を送る
@@ -327,7 +352,7 @@ const final = await stream.finalMessage();
 
 ## 14. scripts
 
-- `scripts/check-feeds.ts`（`npx tsx`）: `DEFAULT_SOURCES` を読み、各 feedUrl（`--all-alternates` で alt も）を 20s タイムアウト・ブラウザ風 UA で fetch → 表を出力: name / URL / HTTP status / content-type / 形式（rss2・atom・rdf・not-xml）/ 件数 / 最新タイトル+日付 / 本文全文あり(yes/no)。主URLがひとつでも失敗したら exit 1。
+- `scripts/check-feeds.ts`（`npx tsx`）: `DEFAULT_SOURCES` を読み、各 feedUrl（`--all-alternates` で alt も）を 20s タイムアウト・ブラウザ風 UA で fetch → 表を出力: name / URL / HTTP status / content-type / 形式（rss2・atom・rdf・not-xml）/ 件数 / 最新タイトル+日付 / 本文全文あり(yes/no)。主URLがひとつでも失敗したら exit 1（§9.5 の一覧フォールバックで 1 件以上取れたソースは失敗に数えない）。
 - `scripts/gen-icons.mjs`: 依存なしの最小PNGエンコーダ（zlib + CRC32）で 16/48/128 px のアイコンを生成。
 - `scripts/smoke-extension.mjs`: Playwright の `chromium.launchPersistentContext` に `--disable-extensions-except=dist --load-extension=dist` を渡して起動し、`context.serviceWorkers()` / `waitForEvent("serviceworker")` で SW が登録されること、`chrome-extension://<id>/src/app/index.html` と `src/options/index.html` がエラーなく描画されること（`h1` が出る）を確認。`executablePath` は `/opt/pw-browsers/chromium` 配下（サンドボックス）またはデフォルト。
 
@@ -339,6 +364,7 @@ const final = await stream.finalMessage();
 - `tests/summarySchema.test.ts`: 正常 JSON / 文章に包まれた JSON / 欠損フィールド → エラー / 型違い
 - `tests/prompts.test.ts`: user プロンプトに本文取得元マーカーと切り詰めが反映される
 - `tests/readability.test.ts`（`// @vitest-environment jsdom`）: fixture HTML から 800 字以上抽出できる
+- `tests/listingExtract.test.ts`（`// @vitest-environment jsdom`）: fixture の一覧 HTML から、パターン一致かつ見出し/20文字以上のリンクだけが文書順・重複なしで取れる / 相対 href の絶対化 / `time[datetime]` の日付 / カテゴリリンク・ページネーションが落ちる / パターン不一致で 0 件
 - `vitest.config.ts`: `environment: "node"` 既定、`include: ["tests/**/*.test.ts"]`
 
 ## 16. README.md（日本語）に書くこと

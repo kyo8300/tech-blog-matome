@@ -21,6 +21,12 @@ export interface Source {
   lastStatus?: "ok" | "error";
   lastError?: string;
   lastItemCount?: number;
+  /** フィードが無い/壊れているソース用の HTML 一覧ページ（§9.5） */
+  listingUrl?: string;
+  /** 一覧ページ内で記事URLとみなす正規表現（正規化後の絶対URLに対して適用） */
+  listingLinkPattern?: string;
+  /** 直近の実行でどちらの経路で取得したか */
+  lastFetchMode?: "feed" | "listing";
 }
 
 /** Claude が生成する3段階要約 */
@@ -110,7 +116,7 @@ export interface PipelineProgress {
 export interface FeedTestResult {
   ok: boolean;
   status?: number;
-  format?: "rss2" | "atom" | "rdf" | "not-xml";
+  format?: "rss2" | "atom" | "rdf" | "not-xml" | "listing";
   itemCount?: number;
   newestTitle?: string;
   newestDate?: string;
@@ -123,4 +129,11 @@ export interface ExtractResult {
   title?: string;
   text: string;
   excerpt?: string;
+}
+
+/** 一覧ページから抽出した記事リンク1件分（§9.5） */
+export interface ListingItem {
+  url: string;
+  title: string;
+  publishedAt?: number;
 }

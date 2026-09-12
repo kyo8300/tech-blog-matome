@@ -3,7 +3,10 @@
 import { listen } from "../shared/messages";
 import { loadSettings } from "../shared/settings";
 import { LOCK_STALE_MS } from "../shared/constants";
+import { getDb } from "../shared/db";
+import { DEFAULT_SOURCES } from "../shared/sources";
 import { testFeed } from "./feedFetcher";
+import { testListing } from "./listingFetcher";
 import { runPipeline, resummarize, refetchContent, resetAll, queuePendingTrigger } from "./pipeline";
 import { getProgress } from "./progress";
 import { ensureAlarm } from "./alarms";
@@ -62,6 +65,17 @@ export function registerMessageRouter(): void {
 
       case "TEST_FEED":
         return testFeed(msg.url);
+
+      case "TEST_LISTING":
+        return (async () => {
+          const db = getDb();
+          const source =
+            (await db.sources.get(msg.sourceId)) ?? DEFAULT_SOURCES.find((s) => s.id === msg.sourceId);
+          if (!source) {
+            return { ok: false, error: "ソースが見つかりません" };
+          }
+          return testListing(source);
+        })();
 
       case "SETTINGS_CHANGED":
         return (async () => {

@@ -10,7 +10,7 @@
 // （下記コメント参照）ので、呼び出し側が外側で acquire/release しているかどうかに関わらず、
 // 抽出中に document が閉じられたり、抽出後に開きっぱなしになったりしない。
 
-import type { ExtractResult } from "../shared/types";
+import type { ExtractResult, ListingItem } from "../shared/types";
 import { send } from "../shared/messages";
 import { OFFSCREEN_PAGE } from "../shared/constants";
 
@@ -98,6 +98,23 @@ export async function extractViaOffscreen(html: string, url: string): Promise<Ex
   await acquire();
   try {
     return await send({ type: "OFFSCREEN_EXTRACT", target: "offscreen", html, url });
+  } finally {
+    await release();
+  }
+}
+
+/**
+ * offscreen document に一覧ページのHTMLを送り、記事リンクの抽出結果を受け取る（§9.5）。
+ * extractViaOffscreen 同様、呼び出し1回ごとに acquire()/release() する。
+ */
+export async function extractLinksViaOffscreen(
+  html: string,
+  url: string,
+  pattern: string,
+): Promise<{ items: ListingItem[] }> {
+  await acquire();
+  try {
+    return await send({ type: "OFFSCREEN_EXTRACT_LINKS", target: "offscreen", html, url, pattern });
   } finally {
     await release();
   }

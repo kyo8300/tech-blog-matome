@@ -14,6 +14,16 @@ function formatResult(result: FeedTestResult): string {
   return `HTTP ${status} / ${count}件 / ${content} / 最新: ${newest}`;
 }
 
+/** 一覧ページ抽出テスト（§9.5）の結果表示 */
+function formatListingResult(result: FeedTestResult): string {
+  if (!result.ok) {
+    return result.error ?? "一覧ページ抽出テストに失敗しました";
+  }
+  const count = result.itemCount ?? 0;
+  const newest = result.newestTitle ?? "-";
+  return `一覧: ${count}件 / 最新: ${newest}`;
+}
+
 export function SourceRow(props: {
   source: Source;
   enabled: boolean;
@@ -26,6 +36,8 @@ export function SourceRow(props: {
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<FeedTestResult | null>(null);
   const [tryingAlt, setTryingAlt] = useState(false);
+  const [listingTesting, setListingTesting] = useState(false);
+  const [listingResult, setListingResult] = useState<FeedTestResult | null>(null);
 
   async function handleTest() {
     setTesting(true);
@@ -60,6 +72,19 @@ export function SourceRow(props: {
     }
   }
 
+  async function handleTestListing() {
+    setListingTesting(true);
+    setListingResult(null);
+    try {
+      const r = await send({ type: "TEST_LISTING", sourceId: source.id });
+      setListingResult(r);
+    } catch (err) {
+      setListingResult({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setListingTesting(false);
+    }
+  }
+
   return (
     <div className="source-row">
       <div className="source-row-main">
@@ -84,8 +109,16 @@ export function SourceRow(props: {
             {tryingAlt ? "試行中…" : "候補URLを試す"}
           </button>
         )}
+        {source.listingUrl && (
+          <button type="button" className="secondary" onClick={handleTestListing} disabled={listingTesting}>
+            {listingTesting ? "テスト中…" : "一覧ページ抽出テスト"}
+          </button>
+        )}
       </div>
       {result && <p className={`result ${result.ok ? "ok" : "error"}`}>{formatResult(result)}</p>}
+      {listingResult && (
+        <p className={`result ${listingResult.ok ? "ok" : "error"}`}>{formatListingResult(listingResult)}</p>
+      )}
     </div>
   );
 }

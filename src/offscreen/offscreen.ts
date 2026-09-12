@@ -3,8 +3,9 @@
 // fetch はここでは行わない（HTML 取得は SW 側の articleFetcher が担う）。
 
 import { Readability } from "@mozilla/readability";
-import type { ExtractResult } from "../shared/types";
+import type { ExtractResult, ListingItem } from "../shared/types";
 import { listen } from "../shared/messages";
+import { extractListingItems } from "../lib/listingExtract";
 
 /** テキストの空白を正規化する（連続する空白・改行をまとめ、前後をトリムする） */
 function normalizeWhitespace(text: string): string {
@@ -16,14 +17,18 @@ function normalizeWhitespace(text: string): string {
     .trim();
 }
 
-/** 記事HTMLから Readability で本文を抽出する */
-function extract(html: string, url: string): ExtractResult {
+/** 記事の実URLを <base> として head 先頭に挿入する（相対URL解決・Readability の判定精度のため） */
+function parseWithBase(html: string, url: string): Document {
   const doc = new DOMParser().parseFromString(html, "text/html");
-
-  // 相対URLの解決や Readability の判定精度のため、記事の実URLを <base> として挿入する
   const base = doc.createElement("base");
   base.href = url;
   doc.head.insertBefore(base, doc.head.firstChild);
+  return doc;
+}
+
+/** 記事HTMLから Readability で本文を抽出する */
+function extract(html: string, url: string): ExtractResult {
+  const doc = parseWithBase(html, url);
 
   const article = new Readability(doc).parse();
   if (!article) {
@@ -37,12 +42,23 @@ function extract(html: string, url: string): ExtractResult {
   };
 }
 
+/** §9.5: 一覧ページのHTMLから記事リンクを抽出する */
+function extractLinks(html: string, url: string, pattern: string): { items: ListingItem[] } {
+  const doc = parseWithBase(html, url);
+  return { items: extractListingItems(doc, { baseUrl: url, pattern }) };
+}
+
 listen(
   (msg) => {
-    if (msg.type !== "OFFSCREEN_EXTRACT") return undefined;
-    // extract() が同期的に throw しても handler 自体は同期例外にならないよう
-    // async IIFE で包み、Promise の reject として返す（listen 側で catch される）。
-    return (async () => extract(msg.html, msg.url))();
+    // handler が同期的に throw しても呼び出し元は必ず1回応答を受け取れるよう、
+    // async IIFE で包んで Promise の reject として返す（listen 側で catch される）。
+    if (msg.type === "OFFSCREEN_EXTRACT") {
+      return (async () => extract(msg.html, msg.url))();
+    }
+    if (msg.type === "OFFSCREEN_EXTRACT_LINKS") {
+      return (async () => extractLinks(msg.html, msg.url, msg.pattern))();
+    }
+    return undefined;
   },
   { target: "offscreen" },
 );

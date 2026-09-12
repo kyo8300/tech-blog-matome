@@ -56,6 +56,8 @@ export const DEFAULT_SOURCES: Source[] = [
       "https://eng.uber.com/feed/",
     ],
     siteUrl: "https://www.uber.com/us/en/blog/engineering/",
+    listingUrl: "https://www.uber.com/us/en/blog/engineering/",
+    listingLinkPattern: "^https://www\\.uber\\.com/(?:[a-z]{2}-[A-Z]{2}/|[a-z]{2}/[a-z]{2}/)?blog/[^/]+/?$",
     initialized: false,
   },
   {
@@ -97,12 +99,10 @@ export const DEFAULT_SOURCES: Source[] = [
     id: "linkedin",
     name: "LinkedIn Engineering",
     feedUrl: "https://engineering.linkedin.com/blog.rss.html",
-    altFeedUrls: [
-      "https://www.linkedin.com/blog/engineering/rss",
-      "https://www.linkedin.com/blog/engineering/feed",
-      "https://engineering.linkedin.com/taxonomy/term/1/feed",
-    ],
+    altFeedUrls: ["https://www.linkedin.com/blog/engineering/rss"],
     siteUrl: "https://www.linkedin.com/blog/engineering",
+    listingUrl: "https://www.linkedin.com/blog/engineering",
+    listingLinkPattern: "^https://www\\.linkedin\\.com/blog/engineering/[^/]+/[^/]+$",
     initialized: false,
   },
   {

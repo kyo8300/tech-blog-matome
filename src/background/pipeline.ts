@@ -12,6 +12,7 @@ import { htmlToText } from "../lib/htmlToText";
 import { parseFeed, filterByCategory, NotXmlError, type FeedItem } from "../lib/feedParser";
 import { mapLimit } from "../lib/concurrency";
 import { fetchFeed, testFeed as testFeedImpl } from "./feedFetcher";
+import { fetchListing } from "./listingFetcher";
 import { summarizeOne } from "./summarizer";
 import * as offscreenPool from "./offscreenClient";
 import { notifyRun } from "./notifications";
@@ -28,7 +29,7 @@ export const testFeed = testFeedImpl;
 
 /**
  * 有効ソースを feedUrlOverrides でマージして db.sources に upsert する。
- * 既存の etag/lastModified/initialized/lastFetchedAt/lastStatus/lastError/lastItemCount は維持する
+ * 既存の etag/lastModified/initialized/lastFetchedAt/lastStatus/lastError/lastItemCount/lastFetchMode は維持する
  * （ただし feedUrl 自体が変わった場合は etag/lastModified は無効になるためリセットする）。
  */
 export async function upsertSources(settings: Settings): Promise<Source[]> {
@@ -50,6 +51,7 @@ export async function upsertSources(settings: Settings): Promise<Source[]> {
       lastStatus: prev?.lastStatus,
       lastError: prev?.lastError,
       lastItemCount: prev?.lastItemCount,
+      lastFetchMode: prev?.lastFetchMode,
     };
   });
 
@@ -62,88 +64,146 @@ function sortByPublishedDesc(items: FeedItem[]): FeedItem[] {
   return [...items].sort((a, b) => (b.publishedAt?.getTime() ?? 0) - (a.publishedAt?.getTime() ?? 0));
 }
 
-/** 1ソース分のフィード取得〜新着記事の bulkAdd を行う。新規追加できた記事数を返す */
+/**
+ * フィルタ・dedupe・上限適用・bulkAdd・source更新までを行う（フィード経由/一覧経由で共通）。
+ * mode:"listing" のときは publishedAt でのソートをせず、文書順（一覧の上ほど新しい）を保つ。
+ * 新規追加できた記事数を返す。
+ */
+async function commitItems(
+  source: Source,
+  settings: Settings,
+  items: FeedItem[],
+  mode: "feed" | "listing",
+  feedMeta?: { etag?: string; lastModified?: string },
+): Promise<number> {
+  const db = getDb();
+  const filtered = filterByCategory(items, source.categoryFilter);
+  const sorted = mode === "feed" ? sortByPublishedDesc(filtered) : filtered;
+
+  // URL正規化+sha256 で id を計算する。同じ id が複数回出てくることがある
+  // （フィードが同じ記事を複数エントリで掲載している等）ため、先に現れたものだけ残して dedupe する。
+  const seenIds = new Set<string>();
+  const withIds: { item: FeedItem; id: string }[] = [];
+  for (const item of sorted) {
+    const id = await sha256Hex(normalizeUrl(item.link));
+    if (seenIds.has(id)) continue;
+    seenIds.add(id);
+    withIds.push({ item, id });
+  }
+
+  // 未登録の記事だけ残す
+  const existing = await db.articles.bulkGet(withIds.map((w) => w.id));
+  const newOnes = withIds.filter((_, i) => existing[i] === undefined);
+
+  const limit = source.initialized ? settings.maxNewPerSourcePerRun : 1;
+  const toAdd = newOnes.slice(0, limit);
+
+  let addedCount = 0;
+  if (toAdd.length > 0) {
+    const now = Date.now();
+    // publishedAt 未知の記事は createdAt（取得時刻）を使う
+    const articles: Article[] = toAdd.map(({ item, id }) => ({
+      id,
+      sourceId: source.id,
+      guid: item.guid,
+      title: item.title,
+      url: item.link,
+      publishedAt: item.publishedAt?.getTime() ?? now,
+      createdAt: now,
+      rssSummary: item.contentHtml ? htmlToText(item.contentHtml) : undefined,
+      contentText: undefined,
+      contentSource: "none",
+      contentChars: 0,
+      status: "new",
+      attempts: 0,
+    }));
+    try {
+      await db.articles.bulkAdd(articles);
+      addedCount = articles.length;
+    } catch (err) {
+      // bulkAdd は非トランザクション的に「入れられるものは入れる」ので、
+      // 重複キー等で一部が失敗しても成功した分は保存されている。失敗数を差し引いて数える。
+      if (err instanceof Dexie.BulkError) {
+        addedCount = articles.length - err.failures.length;
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  await db.sources.update(source.id, {
+    initialized: true,
+    ...(mode === "feed" ? { etag: feedMeta?.etag, lastModified: feedMeta?.lastModified } : {}),
+    lastFetchedAt: Date.now(),
+    lastStatus: "ok",
+    lastError: undefined,
+    lastItemCount: items.length,
+    lastFetchMode: mode,
+  });
+
+  return addedCount;
+}
+
+/**
+ * 1ソース分のフィード取得〜新着記事の bulkAdd を行う。新規追加できた記事数を返す。
+ * フィード取得/解析（HTTPエラー・NotXmlError・ネットワークエラー）に失敗し、かつ
+ * source.listingUrl があれば §9.5 の一覧ページフォールバックに切り替える。
+ * 一覧フォールバックが成功した場合は lastStatus:"ok", lastFetchMode:"listing"。
+ * 双方失敗した場合は両方のエラーメッセージを lastError に併記する。
+ */
 async function processSource(source: Source, settings: Settings): Promise<number> {
   const db = getDb();
+  let feedResult: Awaited<ReturnType<typeof fetchFeed>>;
+  let items: FeedItem[];
+
   try {
-    const result = await fetchFeed(
+    feedResult = await fetchFeed(
       source.feedUrl,
       { etag: source.etag, lastModified: source.lastModified },
       FEED_FETCH_TIMEOUT_MS,
     );
 
-    if (result.notModified || result.text === undefined) {
-      await db.sources.update(source.id, { lastFetchedAt: Date.now(), lastStatus: "ok" });
+    if (feedResult.notModified || feedResult.text === undefined) {
+      await db.sources.update(source.id, { lastFetchedAt: Date.now(), lastStatus: "ok", lastFetchMode: "feed" });
       return 0;
     }
 
-    const { items } = parseFeed(result.text);
-    const filtered = filterByCategory(items, source.categoryFilter);
-    const sorted = sortByPublishedDesc(filtered);
-
-    // URL正規化+sha256 で id を計算する。同じ id が複数回出てくることがある
-    // （フィードが同じ記事を複数エントリで掲載している等）ため、先に現れたものだけ残して dedupe する。
-    const seenIds = new Set<string>();
-    const withIds: { item: FeedItem; id: string }[] = [];
-    for (const item of sorted) {
-      const id = await sha256Hex(normalizeUrl(item.link));
-      if (seenIds.has(id)) continue;
-      seenIds.add(id);
-      withIds.push({ item, id });
-    }
-
-    // 未登録の記事だけ残す
-    const existing = await db.articles.bulkGet(withIds.map((w) => w.id));
-    const newOnes = withIds.filter((_, i) => existing[i] === undefined);
-
-    const limit = source.initialized ? settings.maxNewPerSourcePerRun : 1;
-    const toAdd = newOnes.slice(0, limit);
-
-    let addedCount = 0;
-    if (toAdd.length > 0) {
-      const now = Date.now();
-      const articles: Article[] = toAdd.map(({ item, id }) => ({
-        id,
-        sourceId: source.id,
-        guid: item.guid,
-        title: item.title,
-        url: item.link,
-        publishedAt: item.publishedAt?.getTime() ?? now,
-        createdAt: now,
-        rssSummary: item.contentHtml ? htmlToText(item.contentHtml) : undefined,
-        contentText: undefined,
-        contentSource: "none",
-        contentChars: 0,
-        status: "new",
-        attempts: 0,
-      }));
-      try {
-        await db.articles.bulkAdd(articles);
-        addedCount = articles.length;
-      } catch (err) {
-        // bulkAdd は非トランザクション的に「入れられるものは入れる」ので、
-        // 重複キー等で一部が失敗しても成功した分は保存されている。失敗数を差し引いて数える。
-        if (err instanceof Dexie.BulkError) {
-          addedCount = articles.length - err.failures.length;
-        } else {
-          throw err;
-        }
-      }
-    }
-
-    await db.sources.update(source.id, {
-      initialized: true,
-      etag: result.etag,
-      lastModified: result.lastModified,
-      lastFetchedAt: Date.now(),
-      lastStatus: "ok",
-      lastError: undefined,
-      lastItemCount: items.length,
-    });
-
-    return addedCount;
+    items = parseFeed(feedResult.text).items;
   } catch (err) {
-    const message = err instanceof NotXmlError ? err.message : err instanceof Error ? err.message : String(err);
+    const feedMessage = err instanceof NotXmlError ? err.message : err instanceof Error ? err.message : String(err);
+
+    if (!source.listingUrl) {
+      await db.sources.update(source.id, {
+        lastFetchedAt: Date.now(),
+        lastStatus: "error",
+        lastError: feedMessage,
+      });
+      return 0;
+    }
+
+    // §9.5: フィード取得/解析に失敗した場合、一覧ページフォールバックに切り替える
+    try {
+      const listingItems = await fetchListing(source);
+      return await commitItems(source, settings, listingItems, "listing");
+    } catch (listingErr) {
+      const listingMessage =
+        listingErr instanceof Error ? listingErr.message : String(listingErr);
+      await db.sources.update(source.id, {
+        lastFetchedAt: Date.now(),
+        lastStatus: "error",
+        lastError: `フィード: ${feedMessage} / 一覧ページ: ${listingMessage}`,
+      });
+      return 0;
+    }
+  }
+
+  try {
+    return await commitItems(source, settings, items, "feed", {
+      etag: feedResult.etag,
+      lastModified: feedResult.lastModified,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
     await db.sources.update(source.id, {
       lastFetchedAt: Date.now(),
       lastStatus: "error",

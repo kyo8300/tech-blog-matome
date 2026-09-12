@@ -5,10 +5,13 @@
 // （403 または接続不可）。その場合は全件エラーになり exit 1 になるのが正常な結果。実際のフィード疎通確認は
 // ユーザーのローカル環境で行うこと（CLAUDE.md「環境の制約」参照）。
 
+import { JSDOM } from "jsdom";
 import { DEFAULT_SOURCES } from "../src/shared/sources";
 import { parseFeed, NotXmlError, type FeedItem } from "../src/lib/feedParser";
+import { extractListingItems } from "../src/lib/listingExtract";
 import { FEED_FETCH_TIMEOUT_MS } from "../src/shared/constants";
 import { mapLimit } from "../src/lib/concurrency";
+import type { Source } from "../src/shared/types";
 
 const ALL_ALTERNATES = process.argv.includes("--all-alternates");
 const CONCURRENCY = 4;
@@ -153,6 +156,76 @@ async function checkOne(target: CheckTarget): Promise<CheckResult> {
   }
 }
 
+/**
+ * §9.5: 主URLが失敗し listingUrl を持つソース向けの一覧ページフォールバック確認。
+ * 一覧ページを取得し jsdom で extractListingItems を実行する。1件以上取れれば ok:true。
+ */
+async function checkListing(source: Source): Promise<CheckResult> {
+  const base = { sourceName: source.name, url: source.listingUrl!, isPrimary: false as const };
+  try {
+    const { status, contentType, text } = await fetchText(source.listingUrl!, FEED_FETCH_TIMEOUT_MS);
+    if (status !== 200) {
+      return {
+        ...base,
+        status: String(status),
+        contentType,
+        format: "listing",
+        itemCount: "-",
+        newest: "-",
+        hasFullContent: "-",
+        error: `HTTP ${status}`,
+        ok: false,
+      };
+    }
+
+    const dom = new JSDOM(text, { url: source.listingUrl });
+    const items = extractListingItems(dom.window.document, {
+      baseUrl: source.listingUrl!,
+      pattern: source.listingLinkPattern!,
+    });
+
+    if (items.length === 0) {
+      return {
+        ...base,
+        status: String(status),
+        contentType,
+        format: "listing",
+        itemCount: "0",
+        newest: "-",
+        hasFullContent: "-",
+        error: "一覧ページから記事リンクを抽出できませんでした",
+        ok: false,
+      };
+    }
+
+    const newest = items[0]!;
+    return {
+      ...base,
+      status: String(status),
+      contentType,
+      format: "listing",
+      itemCount: String(items.length),
+      newest: newest.title,
+      hasFullContent: "-",
+      error: "",
+      ok: true,
+    };
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    return {
+      ...base,
+      status: "ERR",
+      contentType: "-",
+      format: "listing",
+      itemCount: "-",
+      newest: "-",
+      hasFullContent: "-",
+      error: message,
+      ok: false,
+    };
+  }
+}
+
 /** セル1個分の最大幅。これを超える値は末尾を省略する（URL列は対象外。§下記 formatCell 参照） */
 const MAX_CELL_WIDTH = 60;
 
@@ -223,13 +296,32 @@ async function main(): Promise<void> {
     };
   });
 
+  // §9.5: 主URLが失敗し listingUrl を持つソースは一覧ページも確認し、表に行を追加する。
+  // 一覧ページから1件以上取れれば、そのソースは失敗に数えない。
+  const primaryFailedInitially = results.filter((r) => r.isPrimary && !r.ok);
+  const listingRescued = new Set<string>();
+  for (const failed of primaryFailedInitially) {
+    const source = DEFAULT_SOURCES.find((s) => s.name === failed.sourceName);
+    if (!source?.listingUrl || !source.listingLinkPattern) continue;
+    const listingResult = await checkListing(source);
+    results.push(listingResult);
+    if (listingResult.ok) {
+      listingRescued.add(source.name);
+    }
+  }
+
   printTable(results);
 
-  const primaryFailed = results.filter((r) => r.isPrimary && !r.ok);
+  const primaryFailed = primaryFailedInitially.filter((r) => !listingRescued.has(r.sourceName));
+  const primaryTotal = results.filter((r) => r.isPrimary).length;
+  // 表示上の成功数には一覧ページフォールバックで救済したソースを含めない（主URL自体は失敗のため）。
+  // 救済は「一覧ページフォールバックで救済:」の行と exit code 0 のみで表現する。
+  const primarySucceeded = primaryTotal - primaryFailedInitially.length;
   console.log();
-  console.log(`主URL: ${results.filter((r) => r.isPrimary).length - primaryFailed.length}/${
-    results.filter((r) => r.isPrimary).length
-  } 成功`);
+  console.log(`主URL: ${primarySucceeded}/${primaryTotal} 成功`);
+  if (listingRescued.size > 0) {
+    console.log(`一覧ページフォールバックで救済: ${[...listingRescued].join(", ")}`);
+  }
   if (primaryFailed.length > 0) {
     console.log("失敗した主URL:");
     for (const r of primaryFailed) {

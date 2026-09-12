@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Acme Engineering Blog</title>
+</head>
+<body>
+  <header class="site-header">
+    <a href="/" class="logo">Acme Eng</a>
+    <nav class="categories">
+      <ul>
+        <li><a href="/blog/engineering/">Engineering</a></li>
+        <li><a href="/blog/backend/">Backend</a></li>
+        <li><a href="/blog/frontend/">Frontend</a></li>
+      </ul>
+    </nav>
+  </header>
+
+  <main>
+    <h1>Latest posts</h1>
+
+    <!-- 1) heading pattern + duplicate link (image link with no text, then title link) + time inside <article> -->
+    <article class="post-card">
+      <a href="/blog/slug-alpha/" class="thumb-link"><img src="/img/alpha-thumb.jpg" alt=""></a>
+      <a href="/blog/slug-alpha/">
+        <h3>Deep Dive Into Our New Distributed Rate Limiter Architecture</h3>
+      </a>
+      <p class="excerpt">How we replaced our token-bucket limiter with a sharded sliding window.</p>
+      <time datetime="2026-09-01T00:00:00Z">September 1, 2026</time>
+    </article>
+
+    <!-- 2) heading pattern + time inside <article> -->
+    <article class="post-card">
+      <a href="/blog/slug-beta/">
+        <h3>Migrating Ten Petabytes Without Downtime</h3>
+      </a>
+      <p class="excerpt">Lessons learned from our largest storage migration to date.</p>
+      <time datetime="2026-08-15T08:30:00Z">August 15, 2026</time>
+    </article>
+
+    <!-- 3) heading pattern, no time -->
+    <div class="card">
+      <a href="/blog/slug-gamma/">
+        <h3>Why We Rewrote Our Build System In Rust</h3>
+      </a>
+      <p class="excerpt">A retrospective on a two-year infrastructure project.</p>
+    </div>
+
+    <!-- 4) no heading, but anchor text is long enough (>= 20 chars) -->
+    <div class="card">
+      <a href="/blog/slug-delta/">Notes from running chaos experiments across every production region</a>
+    </div>
+
+    <!-- 5) heading pattern, absolute URL -->
+    <div class="card">
+      <a href="https://example.com/blog/abs-slug/">
+        <h3>Absolute URLs Are Fine Too, Apparently</h3>
+      </a>
+    </div>
+
+    <!-- 6) heading pattern, path-relative href (no leading slash) resolved against baseUrl -->
+    <div class="card">
+      <a href="../slug-epsilon/">
+        <h3>Resolving Relative Links The Hard Way</h3>
+      </a>
+    </div>
+
+    <aside class="sidebar">
+      <h2>Popular this week</h2>
+      <ul>
+        <!-- duplicate of card 3 (slug-gamma) with utm params; should be deduped, first title wins -->
+        <li><a href="/blog/slug-gamma/?utm_source=newsletter&amp;utm_medium=email">Check out our deep dive into build system performance wins</a></li>
+      </ul>
+    </aside>
+
+    <section class="misc-links">
+      <!-- should never be extracted, regardless of text length or heading -->
+      <a href="javascript:void(0)" onclick="share()"><h3>Share This Incredibly Interesting Article With Friends</h3></a>
+      <a href="mailto:editor@example.com">Contact the editorial team about corrections or feedback</a>
+      <a href="#">Back to the top of this very long and scrollable page</a>
+    </section>
+
+    <nav class="pagination">
+      <a href="/blog/engineering/?page=2">Next</a>
+    </nav>
+  </main>
+
+  <footer>
+    <p>&copy; 2026 Acme Corp.</p>
+  </footer>
+</body>
+</html>

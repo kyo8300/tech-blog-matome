@@ -2,7 +2,7 @@
 // SW・offscreen・ページが同じ onMessage を共有するため target フィールドで振り分ける
 // （target 未指定のメッセージは background 宛てとみなす）。
 
-import type { ExtractResult, FeedTestResult, PipelineProgress } from "./types";
+import type { ExtractResult, FeedTestResult, ListingItem, PipelineProgress } from "./types";
 
 /** ページ→SW。今すぐ更新を実行する */
 export interface FetchNowMessage {
@@ -30,6 +30,12 @@ export interface RefetchContentMessage {
 export interface TestFeedMessage {
   type: "TEST_FEED";
   url: string;
+}
+
+/** 設定→SW。一覧ページ抽出フォールバックのテスト（§9.5） */
+export interface TestListingMessage {
+  type: "TEST_LISTING";
+  sourceId: string;
 }
 
 /** 設定→SW。設定が変わったのでアラームなどを再評価する */
@@ -62,17 +68,28 @@ export interface OffscreenExtractMessage {
   url: string;
 }
 
+/** SW→offscreen。一覧ページのHTMLから記事リンクを抽出する（§9.5） */
+export interface OffscreenExtractLinksMessage {
+  type: "OFFSCREEN_EXTRACT_LINKS";
+  target: "offscreen";
+  html: string;
+  url: string;
+  pattern: string;
+}
+
 export type Message =
   | FetchNowMessage
   | GetProgressMessage
   | ResummarizeMessage
   | RefetchContentMessage
   | TestFeedMessage
+  | TestListingMessage
   | SettingsChangedMessage
   | OpenAppMessage
   | ResetAllMessage
   | ProgressMessage
-  | OffscreenExtractMessage;
+  | OffscreenExtractMessage
+  | OffscreenExtractLinksMessage;
 
 /** メッセージの type ごとの応答型 */
 export interface MessageResponseMap {
@@ -81,11 +98,13 @@ export interface MessageResponseMap {
   RESUMMARIZE: { ok: boolean; error?: string };
   REFETCH_CONTENT: { ok: boolean; error?: string };
   TEST_FEED: FeedTestResult;
+  TEST_LISTING: FeedTestResult;
   SETTINGS_CHANGED: { ok: boolean };
   OPEN_APP: { ok: boolean };
   RESET_ALL: { ok: boolean };
   PROGRESS: { ok: boolean };
   OFFSCREEN_EXTRACT: ExtractResult;
+  OFFSCREEN_EXTRACT_LINKS: { items: ListingItem[] };
 }
 
 /** メッセージ M に対応する応答型 */
