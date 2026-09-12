@@ -124,9 +124,9 @@ export const DEFAULT_SOURCES: Source[] = [
   {
     id: "atlassian",
     name: "Atlassian Engineering",
-    feedUrl: "https://www.atlassian.com/blog/atlassian-engineering/feed",
+    feedUrl: "https://atlassianblog.wpengine.com/feed",
     altFeedUrls: [
-      "https://atlassianblog.wpengine.com/feed",
+      "https://www.atlassian.com/blog/atlassian-engineering/feed",
       "https://www.atlassian.com/blog/feed",
       "https://developer.atlassian.com/blog/feed.xml",
     ],

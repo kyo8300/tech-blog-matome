@@ -157,7 +157,7 @@ Dexie スキーマ（`src/shared/db.ts`, version 1）:
 | linkedin | LinkedIn Engineering | https://engineering.linkedin.com/blog.rss.html | 2026-09 時点で 404。alt: `https://www.linkedin.com/blog/engineering/rss`, `https://www.linkedin.com/blog/engineering/feed`, `https://engineering.linkedin.com/taxonomy/term/1/feed` |
 | spotify | Spotify Engineering | https://engineering.atspotify.com/feed | |
 | pinterest | Pinterest Engineering | https://medium.com/feed/pinterest-engineering | Medium |
-| atlassian | Atlassian Engineering | https://www.atlassian.com/blog/atlassian-engineering/feed | 2026-09 時点で 404。alt: `https://atlassianblog.wpengine.com/feed`, `https://www.atlassian.com/blog/feed`, `https://developer.atlassian.com/blog/feed.xml` |
+| atlassian | Atlassian Engineering | https://atlassianblog.wpengine.com/feed | OPML の URL は 2026-09 時点で 404 のため差し替え。alt: `https://www.atlassian.com/blog/atlassian-engineering/feed`, `https://www.atlassian.com/blog/feed`, `https://developer.atlassian.com/blog/feed.xml` |
 | slack | Slack Engineering | https://slack.engineering/feed/ | |
 
 各 `siteUrl` は OPML の `htmlUrl`（google は `https://developer.chrome.com/blog`）。

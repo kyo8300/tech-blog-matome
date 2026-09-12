@@ -19,7 +19,7 @@
       <outline type="rss" text="LinkedIn Engineering" title="LinkedIn Engineering" xmlUrl="https://engineering.linkedin.com/blog.rss.html" htmlUrl="https://www.linkedin.com/blog/engineering"/>
       <outline type="rss" text="Spotify Engineering" title="Spotify Engineering" xmlUrl="https://engineering.atspotify.com/feed" htmlUrl="https://engineering.atspotify.com/"/>
       <outline type="rss" text="Pinterest Engineering" title="Pinterest Engineering" xmlUrl="https://medium.com/feed/pinterest-engineering" htmlUrl="https://medium.com/pinterest-engineering"/>
-      <outline type="rss" text="Atlassian Engineering" title="Atlassian Engineering" xmlUrl="https://www.atlassian.com/blog/atlassian-engineering/feed" htmlUrl="https://www.atlassian.com/blog/atlassian-engineering/cloud-overview"/>
+      <outline type="rss" text="Atlassian Engineering" title="Atlassian Engineering" xmlUrl="https://atlassianblog.wpengine.com/feed" htmlUrl="https://www.atlassian.com/blog/atlassian-engineering/cloud-overview"/>
       <outline type="rss" text="Slack Engineering" title="Slack Engineering" xmlUrl="https://slack.engineering/feed/" htmlUrl="https://slack.engineering/"/>
     </outline>
   </body>
