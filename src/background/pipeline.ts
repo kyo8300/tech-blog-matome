@@ -13,12 +13,15 @@ import { parseFeed, filterByCategory, NotXmlError, type FeedItem } from "../lib/
 import { mapLimit } from "../lib/concurrency";
 import { fetchFeed, testFeed as testFeedImpl } from "./feedFetcher";
 import { summarizeOne } from "./summarizer";
-import { closeOffscreen } from "./offscreenClient";
+import * as offscreenPool from "./offscreenClient";
 import { notifyRun } from "./notifications";
 import { updateProgress, getProgress } from "./progress";
 import * as keepAlive from "./keepAlive";
 
-export type PipelineTrigger = "alarm" | "manual" | "install";
+export type PipelineTrigger = "alarm" | "manual" | "install" | "startup";
+
+/** ロック中に来た alarm/manual の実行要求を、現在の実行が終わった直後に拾い直すための storage.session キー */
+const PENDING_TRIGGER_KEY = "pendingTrigger";
 
 /** 設定ページの「フィード接続テスト」（messageRouter からそのまま re-export して使う） */
 export const testFeed = testFeedImpl;
@@ -150,26 +153,43 @@ async function processSource(source: Source, settings: Settings): Promise<number
   }
 }
 
-/**
- * 取り残し回収。status:"new" の全件と、summarizingAt が SUMMARIZING_STALE_MS 以上前
- * （または未設定）の status:"summarizing" の記事（SW 死亡による取り残し）を
- * "new" に戻して対象IDの一覧を返す。まだ新しい summarizingAt を持つ記事は、
- * RESUMMARIZE / REFETCH_CONTENT の単発実行がまさに処理中の可能性があるため対象にしない
- * （そうしないと二重要約になってしまう）。
+/** status:"new" の記事と、summarizingAt が SUMMARIZING_STALE_MS 以上前（または未設定）の
+ *  status:"summarizing" の記事（SW 死亡による取り残し）を、DBを書き換えずに集めて返す。
+ *  まだ新しい summarizingAt を持つ記事は、RESUMMARIZE / REFETCH_CONTENT の単発実行が
+ *  まさに処理中の可能性があるため対象にしない（そうしないと二重要約になってしまう）。
  */
-export async function recoverOrphans(): Promise<string[]> {
+async function findOrphans(): Promise<{ newIds: string[]; staleSummarizing: Article[] }> {
   const db = getDb();
   const newArticles = await db.articles.where("status").equals("new").toArray();
   const summarizingArticles = await db.articles.where("status").equals("summarizing").toArray();
-
   const now = Date.now();
-  const stale = summarizingArticles.filter((a) => now - (a.summarizingAt ?? 0) >= SUMMARIZING_STALE_MS);
+  const staleSummarizing = summarizingArticles.filter(
+    (a) => now - (a.summarizingAt ?? 0) >= SUMMARIZING_STALE_MS,
+  );
+  return { newIds: newArticles.map((a) => a.id), staleSummarizing };
+}
 
-  if (stale.length > 0) {
-    await db.articles.bulkPut(stale.map((a) => ({ ...a, status: "new" as const, summarizingAt: undefined })));
+/** 取り残し（回収対象）の件数だけを数える。DB は書き換えない（ロックを取る前の事前チェック用）。 */
+export async function countOrphans(): Promise<number> {
+  const { newIds, staleSummarizing } = await findOrphans();
+  return newIds.length + staleSummarizing.length;
+}
+
+/**
+ * 取り残し回収。status:"new" の全件と、取り残された status:"summarizing" の記事を
+ * "new" に戻して対象IDの一覧を返す。
+ */
+export async function recoverOrphans(): Promise<string[]> {
+  const db = getDb();
+  const { newIds, staleSummarizing } = await findOrphans();
+
+  if (staleSummarizing.length > 0) {
+    await db.articles.bulkPut(
+      staleSummarizing.map((a) => ({ ...a, status: "new" as const, summarizingAt: undefined })),
+    );
   }
 
-  return [...newArticles.map((a) => a.id), ...stale.map((a) => a.id)];
+  return [...newIds, ...staleSummarizing.map((a) => a.id)];
 }
 
 export interface SummarizeBatchResult {
@@ -202,51 +222,51 @@ export async function summarizeBatch(ids: string[], settings: Settings): Promise
   return { doneCount, errorCount: errors.length, errors };
 }
 
-/** 現在 runPipeline がロックを保持して実行中かどうか（単発実行が offscreen を閉じてよいかの判定に使う） */
-async function isPipelineRunning(): Promise<boolean> {
-  const progress = await loadProgress();
-  return (
-    progress.running && progress.startedAt !== undefined && Date.now() - progress.startedAt < LOCK_STALE_MS
-  );
-}
-
-/** 指定記事を status:"new" に戻して1件だけ要約し直す（§13-2: keepAlive で挟む） */
-export async function resummarize(articleId: string): Promise<void> {
+/**
+ * 指定記事を1件だけ（再）要約する。"new" を経由せず、現在の状態から直接
+ * status:"summarizing" に遷移させてから summarizeOne を呼ぶ（二重要約防止。§5-item 参照）。
+ * offscreen は acquire/release の参照カウントで扱うため、runPipeline と同時に走っていても
+ * 片方が先に終わっても互いの document を閉じてしまわない。
+ */
+async function summarizeSingle(articleId: string, extraUpdate?: Partial<Article>): Promise<void> {
   const db = getDb();
-  await db.articles.update(articleId, { status: "new", summarizingAt: undefined });
+  await db.articles.update(articleId, {
+    status: "summarizing",
+    summarizingAt: Date.now(),
+    error: undefined,
+    ...extraUpdate,
+  });
   const settings = await loadSettings();
+
   keepAlive.start();
   try {
-    await summarizeOne(articleId, settings);
-  } finally {
-    // runPipeline が実行中なら offscreen はまだ使われているので閉じない
-    if (!(await isPipelineRunning())) {
-      await closeOffscreen();
+    let offscreenAcquired = false;
+    try {
+      await offscreenPool.acquire();
+      offscreenAcquired = true;
+    } catch {
+      // offscreen 起動に失敗しても、以降は RSS 概要へのフォールバックとして処理を続行する
     }
+    try {
+      await summarizeOne(articleId, settings, undefined, { skipInitialTransition: true });
+    } finally {
+      if (offscreenAcquired) {
+        await offscreenPool.release().catch(() => undefined);
+      }
+    }
+  } finally {
     keepAlive.stop();
   }
+}
+
+/** 指定記事を1件だけ要約し直す（§13-2: keepAlive で挟む） */
+export async function resummarize(articleId: string): Promise<void> {
+  await summarizeSingle(articleId);
 }
 
 /** 指定記事の本文（contentText）を消し、再取得したうえで再要約する（§13-2: keepAlive で挟む） */
 export async function refetchContent(articleId: string): Promise<void> {
-  const db = getDb();
-  await db.articles.update(articleId, {
-    status: "new",
-    contentText: undefined,
-    contentSource: "none",
-    contentChars: 0,
-    summarizingAt: undefined,
-  });
-  const settings = await loadSettings();
-  keepAlive.start();
-  try {
-    await summarizeOne(articleId, settings);
-  } finally {
-    if (!(await isPipelineRunning())) {
-      await closeOffscreen();
-    }
-    keepAlive.stop();
-  }
+  await summarizeSingle(articleId, { contentText: undefined, contentSource: "none", contentChars: 0 });
 }
 
 /** 全データを削除して初期状態に戻す（sources は未初期化の既定値で再投入） */
@@ -276,12 +296,31 @@ async function acquireLock(trigger: PipelineTrigger): Promise<boolean> {
   return true;
 }
 
+/**
+ * ロック中に来た alarm/manual の実行要求を記録する（取りこぼし防止）。
+ * FETCH_NOW がロック中で runPipeline を呼ばずに即応答するケースと、
+ * runPipeline 自身がロック獲得に失敗したケースの両方から呼ばれる。
+ */
+export async function queuePendingTrigger(trigger: PipelineTrigger): Promise<void> {
+  await chrome.storage.session.set({ [PENDING_TRIGGER_KEY]: trigger });
+}
+
+/** 記録されている pendingTrigger を取り出して消す（無ければ undefined） */
+async function takePendingTrigger(): Promise<PipelineTrigger | undefined> {
+  const stored = await chrome.storage.session.get(PENDING_TRIGGER_KEY);
+  const trigger = stored[PENDING_TRIGGER_KEY] as PipelineTrigger | undefined;
+  if (trigger !== undefined) {
+    await chrome.storage.session.remove(PENDING_TRIGGER_KEY);
+  }
+  return trigger;
+}
+
 export interface RunPipelineOptions {
   /**
    * true の場合、3.（フィード取得）を飛ばして 4.（取り残し回収）+ 5.（要約）だけを行う。
    * onStartup（ブラウザ起動直後の取り残し処理）用。ロック・keepAlive・progress 更新・
-   * 後片付け（offscreen close / 通知 / lastRunAt / keepAlive.stop / running=false）は
-   * 通常の実行と同じ枠組みに乗せる。
+   * 後片付け（offscreen release / 通知 / keepAlive.stop / running=false）は
+   * 通常の実行と同じ枠組みに乗せる。lastRunAt はフィード取得を伴わないため更新しない。
    */
   recoverOnly?: boolean;
 }
@@ -293,6 +332,10 @@ export async function runPipeline(
 ): Promise<{ started: boolean; reason?: string }> {
   const acquired = await acquireLock(trigger);
   if (!acquired) {
+    // 実行中に来た alarm/manual は、現在の実行が終わった直後に拾い直せるよう記録しておく
+    if (trigger === "alarm" || trigger === "manual") {
+      await queuePendingTrigger(trigger).catch(() => undefined);
+    }
     return { started: false, reason: "既に更新処理が実行中です" };
   }
 
@@ -300,8 +343,16 @@ export async function runPipeline(
   let newCount = 0;
   let doneCount = 0;
   let errorCount = 0;
+  let offscreenAcquired = false;
 
   try {
+    try {
+      await offscreenPool.acquire();
+      offscreenAcquired = true;
+    } catch {
+      // offscreen 起動に失敗しても、記事ごとの抽出時に再試行されるため処理は続行する
+    }
+
     const settings = await loadSettings();
     let ids: string[];
 
@@ -333,7 +384,9 @@ export async function runPipeline(
     return { started: true };
   } finally {
     // 6. 後片付け。どこかが失敗しても keepAlive.stop() と running=false には必ず到達させる。
-    await closeOffscreen();
+    if (offscreenAcquired) {
+      await offscreenPool.release().catch(() => undefined);
+    }
 
     let settings: Settings | undefined;
     try {
@@ -343,10 +396,18 @@ export async function runPipeline(
     }
     if (settings) {
       await notifyRun(newCount, doneCount, errorCount, settings).catch(() => undefined);
-      await saveSettings({ lastRunAt: Date.now() }).catch(() => undefined);
+      // recoverOnly はフィード取得を行っていないので lastRunAt は更新しない
+      if (!options?.recoverOnly) {
+        await saveSettings({ lastRunAt: Date.now() }).catch(() => undefined);
+      }
     }
 
     keepAlive.stop();
     await updateProgress({ running: false, phase: "done", finishedAt: Date.now() }).catch(() => undefined);
+
+    const pending = await takePendingTrigger().catch(() => undefined);
+    if (pending) {
+      void runPipeline(pending);
+    }
   }
 }

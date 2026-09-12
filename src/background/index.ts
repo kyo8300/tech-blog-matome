@@ -3,7 +3,7 @@
 
 import { loadSettings } from "../shared/settings";
 import { ALARM_NAME, SETTINGS_KEY } from "../shared/constants";
-import { runPipeline, upsertSources } from "./pipeline";
+import { runPipeline, upsertSources, countOrphans } from "./pipeline";
 import { ensureAlarm } from "./alarms";
 import { registerMessageRouter } from "./messageRouter";
 import { openApp } from "./openApp";
@@ -27,16 +27,20 @@ chrome.runtime.onInstalled.addListener(() => {
   })();
 });
 
-// onStartup: APIキーが設定済みなら、取り残し回収と要約だけを行う
-// （フィード取得はアラームまたは手動更新に任せる）。
+// onStartup: APIキーが設定済みで、かつ回収対象（取り残し）が実際にあるときだけ、
+// 取り残し回収と要約を行う。回収対象が無ければロックすら取らない
+// （無条件に runPipeline を呼ぶと、起動直後にちょうど発火した fetch アラームが
+// 「実行中」としてロック獲得に失敗し、次の周期まで本来のフィード取得が飛んでしまうため）。
 // runPipeline の recoverOnly モードに乗せることで、ロック・keepAlive・progress 更新・
-// 後片付け（offscreen close / 通知 / lastRunAt）を通常の実行と同じ枠組みで行う
-// （§13-2: 長時間の await を keepAlive 無しで行わない）。
+// 後片付け（offscreen release / 通知 / keepAlive.stop / running=false）を
+// 通常の実行と同じ枠組みで行う（§13-2: 長時間の await を keepAlive 無しで行わない）。
 chrome.runtime.onStartup.addListener(() => {
   void (async () => {
     const settings = await loadSettings();
     if (!settings.apiKey) return;
-    await runPipeline("alarm", { recoverOnly: true });
+    const orphanCount = await countOrphans();
+    if (orphanCount === 0) return;
+    await runPipeline("startup", { recoverOnly: true });
   })();
 });
 

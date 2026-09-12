@@ -4,7 +4,7 @@ import { listen } from "../shared/messages";
 import { loadSettings } from "../shared/settings";
 import { LOCK_STALE_MS } from "../shared/constants";
 import { testFeed } from "./feedFetcher";
-import { runPipeline, resummarize, refetchContent, resetAll } from "./pipeline";
+import { runPipeline, resummarize, refetchContent, resetAll, queuePendingTrigger } from "./pipeline";
 import { getProgress } from "./progress";
 import { ensureAlarm } from "./alarms";
 import { openApp } from "./openApp";
@@ -25,8 +25,13 @@ export function registerMessageRouter(): void {
     switch (msg.type) {
       case "FETCH_NOW":
         return (async () => {
-          const reason = await checkLocked();
-          if (reason) return { started: false, reason };
+          const locked = await checkLocked();
+          if (locked) {
+            // ロック中でも要求を取りこぼさないよう、現在の実行が終わった直後に
+            // 拾い直せるよう記録しておく（runPipeline の finally 参照）
+            await queuePendingTrigger("manual").catch(() => undefined);
+            return { started: false, reason: "実行中のため終了後に実行します" };
+          }
           // runPipeline は await せず起動して即応答する
           void runPipeline("manual");
           return { started: true };

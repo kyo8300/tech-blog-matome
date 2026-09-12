@@ -33,17 +33,26 @@ async function fetchPageText(url: string): Promise<string> {
  * progress を渡した場合（パイプラインのバッチ処理から呼ばれる場合）は、完了時に
  * articlesDone をインクリメントして PROGRESS を送信する。RESUMMARIZE / REFETCH_CONTENT の
  * ような単発実行では progress を渡さず、進捗バーには影響させない。
+ *
+ * skipInitialTransition: true の場合、status を "summarizing" にする最初の更新を行わない。
+ * 呼び出し側（resummarize / refetchContent）が「"new" を経由せず直接 summarizing へ遷移させる」
+ * ために、この関数を呼ぶ前に自分で status:"summarizing" を書き込み済みであることを示す
+ * （経由すると、その間に並行実行中の runPipeline の recoverOrphans が同じ記事を "new" として
+ * 拾ってしまい、二重要約になり得るため）。
  */
 export async function summarizeOne(
   articleId: string,
   settings: Settings,
   progress?: PipelineProgress,
+  options?: { skipInitialTransition?: boolean },
 ): Promise<void> {
   const db = getDb();
   const article = await db.articles.get(articleId);
   if (!article) return;
 
-  await db.articles.update(articleId, { status: "summarizing", summarizingAt: Date.now() });
+  if (!options?.skipInitialTransition) {
+    await db.articles.update(articleId, { status: "summarizing", summarizingAt: Date.now(), error: undefined });
+  }
 
   try {
     const source = await db.sources.get(article.sourceId);

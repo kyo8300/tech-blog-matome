@@ -94,7 +94,7 @@ export interface Settings {
 /** 取得・要約パイプラインの進捗（chrome.storage.session に保存） */
 export interface PipelineProgress {
   running: boolean;
-  trigger?: "alarm" | "manual" | "install";
+  trigger?: "alarm" | "manual" | "install" | "startup";
   startedAt?: number;
   phase: "idle" | "feeds" | "summarizing" | "done";
   feedsDone: number;

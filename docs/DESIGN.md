@@ -128,7 +128,7 @@ interface Settings {
 }
 
 interface PipelineProgress {
-  running: boolean; trigger?: "alarm" | "manual" | "install"; startedAt?: number;
+  running: boolean; trigger?: "alarm" | "manual" | "install" | "startup"; startedAt?: number;
   phase: "idle" | "feeds" | "summarizing" | "done";
   feedsDone: number; feedsTotal: number; articlesDone: number; articlesTotal: number;
   newCount: number; errors: string[]; finishedAt?: number;
@@ -170,7 +170,7 @@ Dexie スキーマ（`src/shared/db.ts`, version 1）:
 type Message =
   | { type: "FETCH_NOW" }                                   // ページ→SW。返答 { started: boolean; reason?: string }
   | { type: "GET_PROGRESS" }                                // → PipelineProgress
-  | { type: "RESUMMARIZE"; articleId: string }              // status を new に戻して1件だけ要約
+  | { type: "RESUMMARIZE"; articleId: string }              // "new" を経由せず直接 summarizing に遷移して1件だけ要約
   | { type: "REFETCH_CONTENT"; articleId: string }          // 本文を再取得して再要約
   | { type: "TEST_FEED"; url: string }                      // 設定→SW。返答 FeedTestResult { ok, status, format, itemCount, newestTitle, newestDate, hasFullContent, error? }
   | { type: "SETTINGS_CHANGED" }                            // 設定→SW。アラーム再評価
@@ -202,11 +202,12 @@ runPipeline(trigger)
         → summarizeArticle(text, contentSource, maxContentChars) → status="done", summary, model, summarizedAt（切り詰めは summarizeArticle → buildSummaryUser の1か所で行う。DB に保存する contentText も maxContentChars まで）
         → 失敗: status="error", error=message, attempts++
       progress.articlesDone++ → PROGRESS 送信
- 6. offscreen を閉じる → notifyRun(newCount, doneCount, errorCount) → settings.lastRunAt=now → keepAlive.stop() → running=false
+ 6. offscreen を release（参照カウントが0なら閉じる）→ notifyRun(newCount, doneCount, errorCount) → settings.lastRunAt=now（recoverOnly のときは更新しない）→ keepAlive.stop() → running=false → 実行中に届いた alarm/manual の要求が `storage.session.pendingTrigger` にあれば消してから runPipeline(pendingTrigger) を起動
+    後片付けの各手順は個別に try/catch し、keepAlive.stop() と running=false には必ず到達する
 ```
-- `RESUMMARIZE` / `REFETCH_CONTENT` は 5. を1件に対して実行。
+- `RESUMMARIZE` / `REFETCH_CONTENT` は 5. を1件に対して実行（ロックは取らない）。"new" を経由せず直接 `status:"summarizing", summarizingAt` に遷移させてから本文取得・要約する（並行する runPipeline の 4. に拾われないため）。keepAlive と offscreen はどちらも参照カウントで共有し、単発実行も try/finally で start/stop・acquire/release する。
 - `onInstalled`: sources 投入・アラーム作成。APIキー未設定なら `chrome.runtime.openOptionsPage()`、設定済みなら `runPipeline("install")`。
-- `onStartup`: 取り残しがあり APIキーがあれば 4.+5. だけ実行。
+- `onStartup`: 取り残し（"new"、または summarizingAt が15分以上前の "summarizing"）を数え、1件以上かつ APIキーがあれば `runPipeline("startup", { recoverOnly: true })` で 4.+5. だけ実行（ロック・keepAlive・進捗・後片付けは通常実行と同じ枠組み）。ゼロなら何もしない。ロック中に来た alarm/manual は `pendingTrigger` に記録され、終了後に実行される。
 - アラーム: `chrome.alarms.get("fetch")` で `periodInMinutes` が異なるときだけ再作成（毎回作り直すとカウントダウンがリセットされる）。最小15分にクランプ。`intervalMinutes <= 0` は無効（アラーム削除）。`storage.onChanged` で再評価。
 
 ## 9. フィード解析（`src/lib/feedParser.ts`, `urlNormalize.ts`）
@@ -231,7 +232,7 @@ async function ensureOffscreen() {
   await creating;
 }
 ```
-offscreen 側: `new DOMParser().parseFromString(html, "text/html")` → `<base href={url}>` を挿入 → `new Readability(doc).parse()` → `{ title, text: textContent を空白正規化, excerpt }` を返す。fetch は SW 側で行い、offscreen は解析だけ。HTML は 3MB で打ち切ってから送る。実行終了時に `chrome.offscreen.closeDocument()`（例外は無視）。
+offscreen 側: `new DOMParser().parseFromString(html, "text/html")` → `<base href={url}>` を挿入 → `new Readability(doc).parse()` → `{ title, text: textContent を空白正規化, excerpt }` を返す。fetch は SW 側で行い、offscreen は解析だけ。HTML は 3MB で打ち切ってから送る。offscreen の利用は `acquire()` / `release()` の参照カウントで管理し、利用者がゼロになったときだけ `chrome.offscreen.closeDocument()`（例外は無視）。
 
 ## 11. Claude 連携（`src/lib/claudeClient.ts`, `prompts.ts`, `summarySchema.ts`）
 
