@@ -149,15 +149,15 @@ Dexie スキーマ（`src/shared/db.ts`, version 1）:
 | stripe | Stripe Blog | https://stripe.com/blog/feed.rss | `categoryFilter: ["Engineering"]`（カテゴリが無ければ全件） |
 | meta | Engineering at Meta | https://engineering.fb.com/feed/ | |
 | shopify | Shopify Engineering | https://shopify.engineering/blog.atom | Atom |
-| uber | Uber Engineering | https://www.uber.com/blog/engineering/rss/ | 記事ページがJS描画の可能性 → RSS概要フォールバック |
+| uber | Uber Engineering | https://www.uber.com/blog/engineering/rss/ | 2026-09 時点で 404。alt: `https://www.uber.com/en-US/blog/engineering/rss/`, `https://www.uber.com/us/en/blog/engineering/rss/`, `https://www.uber.com/blog/rss/`, `https://eng.uber.com/feed/`。記事ページがJS描画の可能性 → RSS概要フォールバック |
 | airbnb | Airbnb Engineering & Data Science | https://medium.com/feed/airbnb-engineering | Medium |
 | github | GitHub Engineering | https://github.blog/engineering/feed/ | |
 | google | Chrome for Developers (Google) | https://developer.chrome.com/static/blog/feed.xml | alt: `https://developers.googleblog.com/feeds/posts/default`, `https://developers.googleblog.com/feed/` |
 | microsoft | Engineering at Microsoft | https://devblogs.microsoft.com/engineering-at-microsoft/feed/ | |
-| linkedin | LinkedIn Engineering | https://engineering.linkedin.com/blog.rss.html | 旧サイトの可能性。alt: `https://www.linkedin.com/blog/engineering/rss`, `https://www.linkedin.com/blog/engineering/feed` |
+| linkedin | LinkedIn Engineering | https://engineering.linkedin.com/blog.rss.html | 2026-09 時点で 404。alt: `https://www.linkedin.com/blog/engineering/rss`, `https://www.linkedin.com/blog/engineering/feed`, `https://engineering.linkedin.com/taxonomy/term/1/feed` |
 | spotify | Spotify Engineering | https://engineering.atspotify.com/feed | |
 | pinterest | Pinterest Engineering | https://medium.com/feed/pinterest-engineering | Medium |
-| atlassian | Atlassian Engineering | https://www.atlassian.com/blog/atlassian-engineering/feed | 未検証 |
+| atlassian | Atlassian Engineering | https://www.atlassian.com/blog/atlassian-engineering/feed | 2026-09 時点で 404。alt: `https://atlassianblog.wpengine.com/feed`, `https://www.atlassian.com/blog/feed`, `https://developer.atlassian.com/blog/feed.xml` |
 | slack | Slack Engineering | https://slack.engineering/feed/ | |
 
 各 `siteUrl` は OPML の `htmlUrl`（google は `https://developer.chrome.com/blog`）。
