@@ -153,20 +153,36 @@ async function checkOne(target: CheckTarget): Promise<CheckResult> {
   }
 }
 
+/** セル1個分の最大幅。これを超える値は末尾を省略する（URL列は対象外。§下記 formatCell 参照） */
+const MAX_CELL_WIDTH = 60;
+
+/**
+ * 表のセル値を1レコード1行に保つための正規化。
+ * 改行・タブは空白に潰し、連続する空白は1個にまとめる。
+ * `truncate` が true（既定）のときのみ、MAX_CELL_WIDTH を超える値の末尾を「…」で省略する。
+ * URL列は完全な値を確認できる必要があるため `truncate: false` で呼び出し、省略しない。
+ */
+function formatCell(value: string, truncate = true): string {
+  const normalized = value.replace(/[\r\n\t]+/g, " ").replace(/ {2,}/g, " ").trim();
+  if (!truncate || normalized.length <= MAX_CELL_WIDTH) return normalized;
+  return `${normalized.slice(0, MAX_CELL_WIDTH - 1)}…`;
+}
+
 function printTable(results: CheckResult[]): void {
-  const columns: { key: keyof CheckResult; label: string }[] = [
-    { key: "sourceName", label: "name" },
-    { key: "url", label: "URL" },
-    { key: "status", label: "status" },
-    { key: "contentType", label: "content-type" },
-    { key: "format", label: "形式" },
-    { key: "itemCount", label: "件数" },
-    { key: "newest", label: "最新タイトル+日付" },
-    { key: "hasFullContent", label: "本文全文あり" },
-    { key: "error", label: "エラー" },
+  const columns: { key: keyof CheckResult; label: string; truncate: boolean }[] = [
+    { key: "sourceName", label: "name", truncate: true },
+    { key: "url", label: "URL", truncate: false },
+    { key: "status", label: "status", truncate: true },
+    { key: "contentType", label: "content-type", truncate: true },
+    { key: "format", label: "形式", truncate: true },
+    { key: "itemCount", label: "件数", truncate: true },
+    { key: "newest", label: "最新タイトル+日付", truncate: true },
+    { key: "hasFullContent", label: "本文全文あり", truncate: true },
+    { key: "error", label: "エラー", truncate: true },
   ];
-  const widths = columns.map((col) =>
-    Math.max(col.label.length, ...results.map((r) => String(r[col.key]).length)),
+  const rows = results.map((r) => columns.map((c) => formatCell(String(r[c.key]), c.truncate)));
+  const widths = columns.map((col, i) =>
+    Math.max(col.label.length, ...rows.map((row) => row[i]!.length)),
   );
   const sep = "-+-";
   const formatRow = (cells: string[]): string =>
@@ -174,8 +190,8 @@ function printTable(results: CheckResult[]): void {
 
   console.log(formatRow(columns.map((c) => c.label)));
   console.log(widths.map((w) => "-".repeat(w)).join(sep));
-  for (const r of results) {
-    console.log(formatRow(columns.map((c) => String(r[c.key]))));
+  for (const row of rows) {
+    console.log(formatRow(row));
   }
 }
 
@@ -215,9 +231,10 @@ async function main(): Promise<void> {
     results.filter((r) => r.isPrimary).length
   } 成功`);
   if (primaryFailed.length > 0) {
-    console.log(
-      `失敗した主URL: ${primaryFailed.map((r) => `${r.sourceName}(${r.error})`).join(", ")}`,
-    );
+    console.log("失敗した主URL:");
+    for (const r of primaryFailed) {
+      console.log(`  - ${r.sourceName}: ${r.url} (${r.error})`);
+    }
     console.log(
       "\n注: サンドボックス環境ではブログドメインへの到達が egress policy でブロックされ、全件失敗（exit 1）が正常です。実際の疎通確認はローカル環境の `npm run check-feeds` で行ってください。",
     );
