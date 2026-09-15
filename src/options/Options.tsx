@@ -192,6 +192,9 @@ export function Options() {
 
           <section>
             <h2>ソース一覧</h2>
+            <p className="hint">
+              前回取り込んだ最新記事より新しい記事だけを要約します（初回は各ブログ最新1件のみ）。
+            </p>
             <div className="source-list">
               {DEFAULT_SOURCES.map((source) => (
                 <SourceRow

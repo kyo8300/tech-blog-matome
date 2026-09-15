@@ -27,8 +27,8 @@ export interface Source {
   listingLinkPattern?: string;
   /** 正規化後の絶対URLがこれに一致したら記事とみなさない（カテゴリ等。§9.5 規則 1'） */
   listingExcludePattern?: string;
-  /** 一覧経路で「見たことがある」記事ID（sha256）。新着判定に使う。最大 LISTING_SEEN_MAX 件、古いものから捨てる（§9.5） */
-  listingSeenIds?: string[];
+  /** これまでに登録した記事の最新公開日（epoch ms）。新着判定の基準（§8-3）。旧版の listingSeenIds は無視して捨てる */
+  latestPublishedAt?: number;
   /** 直近の実行でどちらの経路で取得したか */
   lastFetchMode?: "feed" | "listing";
 }

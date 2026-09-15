@@ -43,8 +43,9 @@ export const MIN_RSS_TEXT_CHARS = 200;
 /** フィード取得の並列数 */
 export const FEED_CONCURRENCY = 4;
 
-/** Source.listingSeenIds の最大保持件数（超えたら古いものから捨てる。§9.5） */
-export const LISTING_SEEN_MAX = 1000;
+/** 新着判定の猶予（ms）。基準 = latestPublishedAt - NEW_ITEM_GRACE_MS。並び順や時差のズレで
+ *  遅れて載った記事を拾うための猶予期間（§8-3） */
+export const NEW_ITEM_GRACE_MS = 3 * 24 * 60 * 60 * 1000;
 
 /** SW の keepAlive 間隔（ms） */
 export const KEEP_ALIVE_INTERVAL_MS = 20_000;

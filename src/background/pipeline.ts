@@ -1,18 +1,17 @@
 // §8: 取得・要約パイプライン本体。runPipeline がフィード取得〜要約〜通知までの一連の流れを担う。
 
-import Dexie from "dexie";
-import type { Article, Settings, Source } from "../shared/types";
+import type { Article, ListingItem, Settings, Source } from "../shared/types";
 import { getDb } from "../shared/db";
 import { DEFAULT_SOURCES } from "../shared/sources";
 import { IDLE_PROGRESS, isLockActive, loadProgress, loadSettings, saveProgress, saveSettings } from "../shared/settings";
 import { FEED_CONCURRENCY, FEED_FETCH_TIMEOUT_MS, SUMMARIZING_STALE_MS } from "../shared/constants";
 import { sha256Hex } from "../lib/hash";
 import { normalizeUrl } from "../lib/urlNormalize";
-import { htmlToText } from "../lib/htmlToText";
 import { parseFeed, filterByCategory, NotXmlError, type FeedItem } from "../lib/feedParser";
 import { mapLimit } from "../lib/concurrency";
 import { fetchFeed, testFeed as testFeedImpl } from "./feedFetcher";
-import { fetchListingItems, commitListingItems } from "./listingFetcher";
+import { fetchListingItems } from "./listingFetcher";
+import { commitNewItems, type CommitCandidate } from "./commit";
 import { summarizeOne } from "./summarizer";
 import * as offscreenPool from "./offscreenClient";
 import { notifyRun } from "./notifications";
@@ -29,9 +28,9 @@ export const testFeed = testFeedImpl;
 
 /**
  * 有効ソースを feedUrlOverrides でマージして db.sources に upsert する。
- * 既存の etag/lastModified/initialized/lastFetchedAt/lastStatus/lastError/lastItemCount/lastFetchMode/listingSeenIds
+ * 既存の etag/lastModified/initialized/lastFetchedAt/lastStatus/lastError/lastItemCount/lastFetchMode/latestPublishedAt
  * は維持する（ただし feedUrl 自体が変わった場合は etag/lastModified は無効になるためリセットする）。
- * listingSeenIds を維持し忘れると一覧経路の「見たことがある」記録が毎回消え、
+ * latestPublishedAt を維持し忘れると新着判定の基準が毎回失われ、
  * 過去記事が繰り返し新着扱いになってしまうため他の実行時フィールドと同様に必ず引き継ぐ。
  */
 export async function upsertSources(settings: Settings): Promise<Source[]> {
@@ -54,7 +53,7 @@ export async function upsertSources(settings: Settings): Promise<Source[]> {
       lastError: prev?.lastError,
       lastItemCount: prev?.lastItemCount,
       lastFetchMode: prev?.lastFetchMode,
-      listingSeenIds: prev?.listingSeenIds,
+      latestPublishedAt: prev?.latestPublishedAt,
     };
   });
 
@@ -62,99 +61,42 @@ export async function upsertSources(settings: Settings): Promise<Source[]> {
   return merged;
 }
 
-/** publishedAt 降順でソートする（無いものは最も古い扱い） */
-function sortByPublishedDesc(items: FeedItem[]): FeedItem[] {
-  return [...items].sort((a, b) => (b.publishedAt?.getTime() ?? 0) - (a.publishedAt?.getTime() ?? 0));
+/** FeedItem[] を commitNewItems 用の候補配列に変換する（URL正規化+sha256 で id を計算） */
+async function toCandidates(items: FeedItem[]): Promise<CommitCandidate[]> {
+  return Promise.all(
+    items.map(async (item) => ({ id: await sha256Hex(normalizeUrl(item.link)), item })),
+  );
 }
 
-/**
- * フィード経由でのフィルタ・dedupe・上限適用・bulkAdd・source更新までを行う。
- * 一覧経由（§9.5）は listingSeenIds ベースの新着判定を行う commitListingItems を別途使う。
- * 新規追加できた記事数を返す。
- */
-async function commitItems(
-  source: Source,
-  settings: Settings,
-  items: FeedItem[],
-  feedMeta?: { etag?: string; lastModified?: string },
-): Promise<number> {
-  const db = getDb();
-  const filtered = filterByCategory(items, source.categoryFilter);
-  const sorted = sortByPublishedDesc(filtered);
-
-  // URL正規化+sha256 で id を計算する。同じ id が複数回出てくることがある
-  // （フィードが同じ記事を複数エントリで掲載している等）ため、先に現れたものだけ残して dedupe する。
-  const seenIds = new Set<string>();
-  const withIds: { item: FeedItem; id: string }[] = [];
-  for (const item of sorted) {
-    const id = await sha256Hex(normalizeUrl(item.link));
-    if (seenIds.has(id)) continue;
-    seenIds.add(id);
-    withIds.push({ item, id });
-  }
-
-  // 未登録の記事だけ残す
-  const existing = await db.articles.bulkGet(withIds.map((w) => w.id));
-  const newOnes = withIds.filter((_, i) => existing[i] === undefined);
-
-  const limit = source.initialized ? settings.maxNewPerSourcePerRun : 1;
-  const toAdd = newOnes.slice(0, limit);
-
-  let addedCount = 0;
-  if (toAdd.length > 0) {
-    const now = Date.now();
-    // publishedAt 未知の記事は createdAt（取得時刻）を使う
-    const articles: Article[] = toAdd.map(({ item, id }) => ({
-      id,
-      sourceId: source.id,
-      guid: item.guid,
-      title: item.title,
-      url: item.link,
-      publishedAt: item.publishedAt?.getTime() ?? now,
-      createdAt: now,
-      rssSummary: item.contentHtml ? htmlToText(item.contentHtml) : undefined,
-      contentText: undefined,
-      contentSource: "none",
-      contentChars: 0,
-      status: "new",
-      attempts: 0,
-    }));
-    try {
-      await db.articles.bulkAdd(articles);
-      addedCount = articles.length;
-    } catch (err) {
-      // bulkAdd は非トランザクション的に「入れられるものは入れる」ので、
-      // 重複キー等で一部が失敗しても成功した分は保存されている。失敗数を差し引いて数える。
-      if (err instanceof Dexie.BulkError) {
-        addedCount = articles.length - err.failures.length;
-      } else {
-        throw err;
-      }
-    }
-  }
-
-  await db.sources.update(source.id, {
-    initialized: true,
-    etag: feedMeta?.etag,
-    lastModified: feedMeta?.lastModified,
-    lastFetchedAt: Date.now(),
-    lastStatus: "ok",
-    lastError: undefined,
-    lastItemCount: items.length,
-    lastFetchMode: "feed",
-  });
-
-  return addedCount;
+/** ListingItem[] を FeedItem 形に変換する（§9.5）。categories は空、hasFullContent は false 固定 */
+async function listingItemsToCandidates(items: ListingItem[]): Promise<CommitCandidate[]> {
+  const asFeedItems: FeedItem[] = items.map((li) => ({
+    title: li.title,
+    link: li.url,
+    publishedAt: li.publishedAt !== undefined ? new Date(li.publishedAt) : undefined,
+    categories: [],
+    hasFullContent: false,
+  }));
+  return toCandidates(asFeedItems);
 }
 
+/** 1ソース分のフィード取得・commitNewItems の呼び出し結果 */
+interface ProcessSourceResult {
+  added: number;
+  carriedOver: number;
+}
+
+const NO_CHANGE: ProcessSourceResult = { added: 0, carriedOver: 0 };
+
 /**
- * 1ソース分のフィード取得〜新着記事の bulkAdd を行う。新規追加できた記事数を返す。
+ * 1ソース分のフィード取得〜新着記事の bulkAdd を行う。
  * フィード取得/解析（HTTPエラー・NotXmlError・ネットワークエラー）に失敗し、かつ
  * source.listingUrl があれば §9.5 の一覧ページフォールバックに切り替える。
  * 一覧フォールバックが成功した場合は lastStatus:"ok", lastFetchMode:"listing"。
  * 双方失敗した場合は両方のエラーメッセージを lastError に併記する。
+ * 304（未更新）のときは commitNewItems を呼ばない（latestPublishedAt は変更しない）。
  */
-async function processSource(source: Source, settings: Settings): Promise<number> {
+async function processSource(source: Source, settings: Settings): Promise<ProcessSourceResult> {
   const db = getDb();
   let feedResult: Awaited<ReturnType<typeof fetchFeed>>;
   let items: FeedItem[];
@@ -168,7 +110,7 @@ async function processSource(source: Source, settings: Settings): Promise<number
 
     if (feedResult.notModified || feedResult.text === undefined) {
       await db.sources.update(source.id, { lastFetchedAt: Date.now(), lastStatus: "ok", lastFetchMode: "feed" });
-      return 0;
+      return NO_CHANGE;
     }
 
     items = parseFeed(feedResult.text).items;
@@ -181,13 +123,15 @@ async function processSource(source: Source, settings: Settings): Promise<number
         lastStatus: "error",
         lastError: feedMessage,
       });
-      return 0;
+      return NO_CHANGE;
     }
 
     // §9.5: フィード取得/解析に失敗した場合、一覧ページフォールバックに切り替える
     try {
       const listingItems = await fetchListingItems(source);
-      return await commitListingItems(source, settings, listingItems);
+      const candidates = await listingItemsToCandidates(listingItems);
+      const result = await commitNewItems(source, settings, candidates, "listing");
+      return { added: result.added, carriedOver: result.carriedOver };
     } catch (listingErr) {
       const listingMessage =
         listingErr instanceof Error ? listingErr.message : String(listingErr);
@@ -196,15 +140,17 @@ async function processSource(source: Source, settings: Settings): Promise<number
         lastStatus: "error",
         lastError: `フィード: ${feedMessage} / 一覧ページ: ${listingMessage}`,
       });
-      return 0;
+      return NO_CHANGE;
     }
   }
 
   try {
-    return await commitItems(source, settings, items, {
-      etag: feedResult.etag,
-      lastModified: feedResult.lastModified,
-    });
+    const filtered = filterByCategory(items, source.categoryFilter);
+    const candidates = await toCandidates(filtered);
+    const result = await commitNewItems(source, settings, candidates, "feed");
+    // etag/lastModified の更新は呼び出し側の責務（commitNewItems はフィード固有の情報を知らない）
+    await db.sources.update(source.id, { etag: feedResult.etag, lastModified: feedResult.lastModified });
+    return { added: result.added, carriedOver: result.carriedOver };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await db.sources.update(source.id, {
@@ -212,7 +158,7 @@ async function processSource(source: Source, settings: Settings): Promise<number
       lastStatus: "error",
       lastError: message,
     });
-    return 0;
+    return NO_CHANGE;
   }
 }
 
@@ -259,6 +205,9 @@ export interface SummarizeBatchResult {
   doneCount: number;
   errorCount: number;
   errors: string[];
+  /** §8-5: 一覧経路の仮公開日記事が実は基準以下の過去記事だったため、要約せず削除した件数。
+   *  呼び出し側（runPipeline）が newCount から差し引く */
+  skippedOldCount: number;
 }
 
 /** ids を Article.publishedAt 降順（不明・未取得は末尾）に並べ替える */
@@ -281,10 +230,10 @@ async function sortIdsByPublishedDesc(ids: string[]): Promise<string[]> {
  */
 export async function summarizeBatch(ids: string[], settings: Settings): Promise<SummarizeBatchResult> {
   if (ids.length === 0) {
-    return { doneCount: 0, errorCount: 0, errors: [] };
+    return { doneCount: 0, errorCount: 0, errors: [], skippedOldCount: 0 };
   }
   if (!settings.apiKey) {
-    return { doneCount: 0, errorCount: 0, errors: ["APIキー未設定"] };
+    return { doneCount: 0, errorCount: 0, errors: ["APIキー未設定"], skippedOldCount: 0 };
   }
 
   const sortedIds = await sortIdsByPublishedDesc(ids);
@@ -299,12 +248,16 @@ export async function summarizeBatch(ids: string[], settings: Settings): Promise
 
   const progress = await getProgress();
   let aborted = false;
+  let skippedOldCount = 0;
 
   await mapLimit(target, settings.summaryConcurrency, async (id) => {
     if (aborted) return;
-    const result = await summarizeOne(id, settings, progress);
+    const result = await summarizeOne(id, settings, progress, { allowDeleteOld: true });
     if (result.billingOrAuthError) {
       aborted = true;
+    }
+    if (result.skippedOld) {
+      skippedOldCount++;
     }
   });
 
@@ -321,7 +274,7 @@ export async function summarizeBatch(ids: string[], settings: Settings): Promise
     if (article.status === "done") doneCount++;
     else if (article.status === "error") errors.push(`${article.title}: ${article.error ?? "不明なエラー"}`);
   }
-  return { doneCount, errorCount: errors.length, errors: [...notices, ...errors] };
+  return { doneCount, errorCount: errors.length, errors: [...notices, ...errors], skippedOldCount };
 }
 
 /**
@@ -382,11 +335,11 @@ export async function resetAll(): Promise<void> {
 }
 
 /**
- * 指定ソースの記事・チャット履歴を削除し、initialized=false / listingSeenIds=[] に戻す
+ * 指定ソースの記事・チャット履歴を削除し、initialized=false / latestPublishedAt=undefined に戻す
  * （etag/lastModified/lastStatus/lastError/lastItemCount/lastFetchMode もクリアする）。
- * これにより次回実行時、一覧経路は「先頭1件だけ登録」の初回バックフィルからやり直しになる。
+ * これにより次回実行時、フィード経路・一覧経路とも「最新1件だけ登録」の初回バックフィルからやり直しになる。
  * パイプライン実行中（ロック有効。running かつ startedAt から LOCK_STALE_MS 未満）は拒否する
- * （実行中の commitListingItems が initialized=true / listingSeenIds を書き戻し、削除と競合するため）。
+ * （実行中の commitNewItems が initialized=true / latestPublishedAt を書き戻し、削除と競合するため）。
  * 削除した記事数を返す。
  */
 export async function resetSource(sourceId: string): Promise<{ ok: boolean; deleted: number; error?: string }> {
@@ -407,7 +360,7 @@ export async function resetSource(sourceId: string): Promise<{ ok: boolean; dele
   if (source) {
     await db.sources.update(sourceId, {
       initialized: false,
-      listingSeenIds: [],
+      latestPublishedAt: undefined,
       etag: undefined,
       lastModified: undefined,
       lastStatus: undefined,
@@ -506,9 +459,16 @@ export async function runPipeline(
       // 3. FEEDS
       await updateProgress({ phase: "feeds", feedsTotal: sources.length, feedsDone: 0 });
       await mapLimit(sources, FEED_CONCURRENCY, async (source) => {
-        const added = await processSource(source, settings);
-        newCount += added;
-        await updateProgress((c) => ({ feedsDone: c.feedsDone + 1, newCount }));
+        const result = await processSource(source, settings);
+        newCount += result.added;
+        await updateProgress((c) => ({
+          feedsDone: c.feedsDone + 1,
+          newCount,
+          errors:
+            result.carriedOver > 0
+              ? [...c.errors, `${source.name}: ${result.carriedOver} 件を次回に繰り越し`]
+              : c.errors,
+        }));
       });
 
       // 4. 取り残し回収
@@ -520,7 +480,10 @@ export async function runPipeline(
     const result = await summarizeBatch(ids, settings);
     doneCount = result.doneCount;
     errorCount = result.errorCount;
-    await updateProgress((c) => ({ phase: "done", errors: [...c.errors, ...result.errors] }));
+    // §8-5: 一覧経路の仮公開日記事が実は過去記事だったため要約せず削除した分は newCount から差し引く
+    // （errors には入れない）
+    newCount = Math.max(0, newCount - result.skippedOldCount);
+    await updateProgress((c) => ({ phase: "done", newCount, errors: [...c.errors, ...result.errors] }));
 
     return { started: true };
   } finally {

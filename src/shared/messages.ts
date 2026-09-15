@@ -54,7 +54,7 @@ export interface ResetAllMessage {
   type: "RESET_ALL";
 }
 
-/** 設定→SW。指定ソースの記事・チャットを削除し、initialized=false / listingSeenIds=[] 等にリセットする */
+/** 設定→SW。指定ソースの記事・チャットを削除し、initialized=false / latestPublishedAt=undefined 等にリセットする */
 export interface ResetSourceMessage {
   type: "RESET_SOURCE";
   sourceId: string;

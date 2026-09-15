@@ -5,6 +5,7 @@ import { getDb } from "../shared/db";
 import {
   MIN_PAGE_TEXT_CHARS,
   MIN_RSS_TEXT_CHARS,
+  NEW_ITEM_GRACE_MS,
   PAGE_FETCH_TIMEOUT_MS,
   PAGE_MAX_BYTES,
 } from "../shared/constants";
@@ -38,6 +39,12 @@ async function fetchPageText(url: string): Promise<PageFetchResult> {
 /** summarizeOne の結果。呼び出し側（summarizeBatch）が課金・認証エラーによる打ち切り判定に使う */
 export interface SummarizeOneResult {
   billingOrAuthError: boolean;
+  /**
+   * §8-5: 一覧経路で登録時に公開日が不明だった記事（publishedAt が仮値 = createdAt）について、
+   * ページから取れた本当の公開日が基準（source.latestPublishedAt - NEW_ITEM_GRACE_MS）以下だったため、
+   * 要約せず記事行を削除した場合 true。呼び出し側は newCount から差し引き、errors には入れない。
+   */
+  skippedOld?: boolean;
 }
 
 /**
@@ -51,12 +58,18 @@ export interface SummarizeOneResult {
  * ために、この関数を呼ぶ前に自分で status:"summarizing" を書き込み済みであることを示す
  * （経由すると、その間に並行実行中の runPipeline の recoverOrphans が同じ記事を "new" として
  * 拾ってしまい、二重要約になり得るため）。
+ *
+ * allowDeleteOld: true の場合のみ、§8-5 の「仮公開日記事が実は基準以下の過去記事だった」判定で
+ * 記事行を削除する。runPipeline のバッチ経路（summarizeBatch）だけが true を渡す。
+ * RESUMMARIZE / REFETCH_CONTENT の単発実行（ユーザーの明示操作）では false（既定）のままにし、
+ * 削除はせず publishedAt を実日付に更新したうえで通常どおり要約する
+ * （ユーザーが操作したカードが黙って消えないようにするため）。
  */
 export async function summarizeOne(
   articleId: string,
   settings: Settings,
   progress?: PipelineProgress,
-  options?: { skipInitialTransition?: boolean },
+  options?: { skipInitialTransition?: boolean; allowDeleteOld?: boolean },
 ): Promise<SummarizeOneResult> {
   const db = getDb();
   const article = await db.articles.get(articleId);
@@ -85,11 +98,25 @@ export async function summarizeOne(
       // ページ取得・抽出の失敗は RSS 概要へのフォールバックとして扱う
     }
 
-    // ページから公開日が取れ、Article.publishedAt が取得時刻の仮値（createdAt と等しい）なら更新する。
-    // 要約の成否・スキップにかかわらず、本文取得直後（この後の要約スキップ判定より前）に行う。
+    // ページから公開日が取れ、Article.publishedAt が取得時刻の仮値（createdAt と等しい。
+    // 一覧経路で登録時に公開日が不明だった記事）なら、要約の成否・スキップにかかわらず、
+    // 本文取得直後（この後の要約スキップ判定より前）に §8-5 の判定を行う。
     if (pagePublishedAt !== undefined && article.publishedAt === article.createdAt) {
+      const threshold = (source?.latestPublishedAt ?? -Infinity) - NEW_ITEM_GRACE_MS;
+      if (options?.allowDeleteOld && pagePublishedAt <= threshold) {
+        // 本当は基準以下（新着ではない）過去記事だった。タイトルだけの要約に課金しないよう、
+        // Claude を呼ばず記事行そのものを削除する（progress.errors には入れず newCount から減らす）。
+        // runPipeline のバッチ経路（allowDeleteOld:true）だけがこの分岐に入る。
+        await db.articles.delete(articleId);
+        return { billingOrAuthError: false, skippedOld: true };
+      }
+      // 単発実行（allowDeleteOld:false）で基準以下だった場合も含め、削除はせず
+      // publishedAt を実日付に更新したうえで通常どおり要約する。
       await db.articles.update(articleId, { publishedAt: pagePublishedAt });
       article.publishedAt = pagePublishedAt;
+      if (source && pagePublishedAt > (source.latestPublishedAt ?? -Infinity)) {
+        await db.sources.update(source.id, { latestPublishedAt: pagePublishedAt });
+      }
     }
 
     if (contentSource === "none") {

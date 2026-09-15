@@ -9,6 +9,7 @@ import { JSDOM } from "jsdom";
 import { DEFAULT_SOURCES } from "../src/shared/sources";
 import { parseFeed, NotXmlError, type FeedItem } from "../src/lib/feedParser";
 import { extractListingItems } from "../src/lib/listingExtract";
+import { extractPublishedAt } from "../src/lib/pageDate";
 import { FEED_FETCH_TIMEOUT_MS } from "../src/shared/constants";
 import { mapLimit } from "../src/lib/concurrency";
 import type { Source } from "../src/shared/types";
@@ -36,6 +37,8 @@ interface CheckResult {
   itemCount: string;
   newest: string;
   hasFullContent: string;
+  /** §14: 一覧行のみ。先頭1件の記事ページから公開日が取れるかどうか（offscreen と同じ抽出順） */
+  pageDate: string;
   error: string;
   /** exit code 判定に使う。primary URL が成功したかどうか */
   ok: boolean;
@@ -107,6 +110,7 @@ async function checkOne(target: CheckTarget): Promise<CheckResult> {
         itemCount: "-",
         newest: "-",
         hasFullContent: "-",
+        pageDate: "-",
         error: `HTTP ${status}`,
         ok: false,
       };
@@ -122,6 +126,7 @@ async function checkOne(target: CheckTarget): Promise<CheckResult> {
         itemCount: String(parsed.items.length),
         newest: newestItem ? `${newestItem.title} (${formatDate(newestItem.publishedAt)})` : "(記事なし)",
         hasFullContent: newestItem?.hasFullContent ? "yes" : "no",
+        pageDate: "-",
         error: "",
         ok: true,
       };
@@ -135,6 +140,7 @@ async function checkOne(target: CheckTarget): Promise<CheckResult> {
         itemCount: "-",
         newest: "-",
         hasFullContent: "-",
+        pageDate: "-",
         error: message,
         ok: false,
       };
@@ -150,9 +156,27 @@ async function checkOne(target: CheckTarget): Promise<CheckResult> {
       itemCount: "-",
       newest: "-",
       hasFullContent: "-",
+      pageDate: "-",
       error: reason,
       ok: false,
     };
+  }
+}
+
+/**
+ * §14: 記事ページを1件取得し、offscreen（src/lib/pageDate.ts）と同じ抽出順で公開日が取れるかを確認する。
+ * 取得や抽出に失敗した場合も例外にせず「取れず」を返す（あくまで診断用の付加情報のため）。
+ */
+async function checkArticlePageDate(url: string): Promise<string> {
+  try {
+    const { status, text } = await fetchText(url, FEED_FETCH_TIMEOUT_MS);
+    if (status !== 200) return "取れず";
+    const dom = new JSDOM(text, { url });
+    const publishedAt = extractPublishedAt(dom.window.document);
+    if (publishedAt === undefined) return "取れず";
+    return `記事ページの日付: ${new Date(publishedAt).toISOString().slice(0, 10)}`;
+  } catch {
+    return "取れず";
   }
 }
 
@@ -173,6 +197,7 @@ async function checkListing(source: Source): Promise<CheckResult> {
         itemCount: "-",
         newest: "-",
         hasFullContent: "-",
+        pageDate: "-",
         error: `HTTP ${status}`,
         ok: false,
       };
@@ -194,20 +219,27 @@ async function checkListing(source: Source): Promise<CheckResult> {
         itemCount: "0",
         newest: "-",
         hasFullContent: "-",
+        pageDate: "-",
         error: "一覧ページから記事リンクを抽出できませんでした",
         ok: false,
       };
     }
 
+    // §14: 件数欄に一覧から公開日が取れた件数も添える
+    const withDate = items.filter((i) => i.publishedAt !== undefined).length;
     const newest = items[0]!;
+    // §14: 先頭1件の記事ページを取得し、offscreen と同じ抽出順で公開日が取れるか確認する
+    const pageDate = await checkArticlePageDate(newest.url);
+
     return {
       ...base,
       status: String(status),
       contentType,
       format: "listing",
-      itemCount: String(items.length),
+      itemCount: `${items.length}件（日付あり ${withDate}）`,
       newest: newest.title,
       hasFullContent: "-",
+      pageDate,
       error: "",
       ok: true,
     };
@@ -221,6 +253,7 @@ async function checkListing(source: Source): Promise<CheckResult> {
       itemCount: "-",
       newest: "-",
       hasFullContent: "-",
+      pageDate: "-",
       error: message,
       ok: false,
     };
@@ -252,6 +285,7 @@ function printTable(results: CheckResult[]): void {
     { key: "itemCount", label: "件数", truncate: true },
     { key: "newest", label: "最新タイトル+日付", truncate: true },
     { key: "hasFullContent", label: "本文全文あり", truncate: true },
+    { key: "pageDate", label: "記事ページの日付", truncate: true },
     { key: "error", label: "エラー", truncate: true },
   ];
   const rows = results.map((r) => columns.map((c) => formatCell(String(r[c.key]), c.truncate)));
@@ -292,6 +326,7 @@ async function main(): Promise<void> {
       itemCount: "-",
       newest: "-",
       hasFullContent: "-",
+      pageDate: "-",
       error: String(s.reason),
       ok: false,
     };

@@ -100,7 +100,7 @@ interface Source {
   listingUrl?: string;             // フィードが無い/壊れているソース用の HTML 一覧ページ（§9.5）
   listingLinkPattern?: string;     // 一覧ページ内で記事URLとみなす正規表現（正規化後の絶対URLに対して適用）
   listingExcludePattern?: string;  // 正規化後の絶対URLがこれに一致したら記事とみなさない（カテゴリ等。§9.5 規則 1'）
-  listingSeenIds?: string[];       // 一覧経路で「見たことがある」記事ID（sha256）。新着判定に使う。最大 1000 件、古いものから捨てる（§9.5）
+  latestPublishedAt?: number;      // これまでに登録した記事の最新公開日（epoch ms）。新着判定の基準（§8-3）。旧版の listingSeenIds は無視して捨てる
   lastStatus?: "ok" | "error"; lastError?: string; lastItemCount?: number;
   lastFetchMode?: "feed" | "listing";  // 直近の実行でどちらの経路で取得したか
 }
@@ -183,7 +183,7 @@ type Message =
   | { type: "SETTINGS_CHANGED" }                            // 設定→SW。アラーム再評価
   | { type: "OPEN_APP"; articleId?: string }
   | { type: "RESET_ALL" }                                   // 全テーブル削除、sources を未初期化に
-  | { type: "RESET_SOURCE"; sourceId: string }              // 設定→SW。そのソースの記事・チャットを削除し、initialized=false / listingSeenIds=[] / etag 等をクリア。返答 { ok, deleted, error? }。パイプライン実行中（progress.running かつ startedAt から LOCK_STALE_MS 未満）は { ok:false, error:"更新の実行中は削除できません" } を返す。設定ページも同じ判定（running かつ startedAt + LOCK_STALE_MS > now）でボタンを無効化し、古いロックが残っていても SW と同じタイミングで押せるようにする
+  | { type: "RESET_SOURCE"; sourceId: string }              // 設定→SW。そのソースの記事・チャットを削除し、initialized=false / latestPublishedAt=undefined / etag 等をクリア。返答 { ok, deleted, error? }。パイプライン実行中（progress.running かつ startedAt から LOCK_STALE_MS 未満）は { ok:false, error:"更新の実行中は削除できません" } を返す。設定ページも同じ判定（running かつ startedAt + LOCK_STALE_MS > now）でボタンを無効化し、古いロックが残っていても SW と同じタイミングで押せるようにする
   | { type: "PROGRESS"; progress: PipelineProgress }        // SW→ページ（受信者がいなければ例外→握りつぶす）
   | { type: "OFFSCREEN_EXTRACT"; target: "offscreen"; html: string; url: string }  // 返答 { title?, text, excerpt? }
   | { type: "OFFSCREEN_EXTRACT_LINKS"; target: "offscreen"; html: string; url: string; pattern: string; excludePattern?: string }; // 返答 { items: ListingItem[] }（§9.5）
@@ -199,8 +199,12 @@ runPipeline(trigger)
  3. FEEDS（並列4）: fetchFeed(url, {etag,lastModified}, 20s) → 304 なら skip
       → parseFeed(xml)（非XMLなら NotXmlError → lastStatus="error"）
       → フィード取得/解析に失敗し source.listingUrl があれば §9.5 の一覧フォールバック（成功なら lastStatus="ok", lastFetchMode="listing"。失敗なら両方のエラーを lastError に併記）
-      → categoryFilter 適用 → URL正規化+sha256 で未登録だけ抽出（db.articles.bulkGet）
-      → 未初期化なら publishedAt 最新の1件だけ、それ以外は maxNewPerSourcePerRun で上限
+      → categoryFilter 適用 → URL正規化+sha256 で id を求める
+      → **新着判定は「公開日が基準より新しい」**で行う（DB 未登録＝新着ではない。フィードにも過去記事が並ぶため）: 基準 = `source.latestPublishedAt - NEW_ITEM_GRACE_MS`（猶予 3 日。並び順や時差のズレで遅れて載った記事を拾うため）。公開日がこれ以下の記事は捨てる。同じ記事の再登録は DB 存在チェック（bulkGet）で防ぐ
+      → 公開日不明の記事: フィード経路では捨てる（RSS で日付が無いのは稀）。一覧経路では通し、本文取得時にページの公開日で判定する（§8-5）
+      → 未初期化、**または latestPublishedAt が未設定**（旧版からの移行）なら publishedAt 最新の1件を選ぶ。その1件が既に DB にあれば登録は 0 件だが、**latestPublishedAt はその公開日に設定する**（判定モードを通常に進めるため。設定しないと毎回「最新1件」判定に留まる）
+      → 初期化済みなら基準を超えるもののうち **DB に無いもの**を publishedAt の古い順に maxNewPerSourcePerRun 件まで登録し、latestPublishedAt は、繰り越しが無い回は「基準を超えた候補のうち登録した分と既登録分」の最大値まで、**繰り越しがある回（carriedOver > 0）は登録した分（addedKnown）の最大値まで**しか進めない（既登録分の新しい日付で繰り越し候補を飛び越さないため）。既登録が猶予内に並んでいても枠を食い潰さない。残りは次回の実行で拾われ、何も失わない。carriedOver は実際に未登録で残った件数。上限に達したら errors に「N 件を次回に繰り越し」。比較は epoch ms のタイムスタンプで行うので同日の複数記事も区別できる。時刻の無いフィードで同一タイムスタンプになっても猶予 3 日と DB 重複排除で取りこぼさない
+      → 登録した記事の最大 publishedAt で `latestPublishedAt` を更新（単調増加。304 のときは変更しない）
       → status:"new", rssSummary: htmlToText(content ?? description), contentSource:"none" で bulkAdd
       → source 更新（initialized=true, etag, lastItemCount）、progress.feedsDone++
  4. 取り残し回収: status:"new" 全件 + `summarizingAt` が15分以上前（SUMMARIZING_STALE_MS）の "summarizing"（SW死亡）を "new" に戻して対象に追加。`summarizingAt` が無い "summarizing" も孤児として回収する
@@ -211,6 +215,7 @@ runPipeline(trigger)
         → offscreen で Readability → text
         → text が 800 字未満なら rssSummary を使う（contentSource="rss"）。それも 200 字未満なら contentSource="none"
         → ページから公開日（ExtractResult.publishedAt）が取れ、Article.publishedAt が取得時刻の仮値（createdAt と等しい）なら publishedAt を更新する（**要約の成否・スキップにかかわらず**、本文取得直後に行う）
+        → 一覧経路で登録時に公開日が不明だった記事は、ページから取れた公開日が `source.latestPublishedAt - NEW_ITEM_GRACE_MS` 以下なら **要約せず記事行を削除**する（progress.errors には入れず、newCount から減らす）。**この削除は runPipeline のバッチ経路に限る**。RESUMMARIZE / REFETCH_CONTENT の単発実行では削除せず、publishedAt を実日付に更新したうえで通常どおり要約する（ユーザーが明示的に要求した操作でカードが黙って消えないため）。ページからも公開日が取れない場合は要約する。取れた場合は source.latestPublishedAt も更新する
         → contentSource="none" かつ rssSummary が無い（一覧経路など）場合は **要約せず** status="error", error="本文を取得できなかったため要約をスキップしました"（attempts++。タイトルだけの要約に課金しない）
         → summarizeArticle(text, contentSource, maxContentChars) → status="done", summary, model, summarizedAt（切り詰めは summarizeArticle → buildSummaryUser の1か所で行う。DB に保存する contentText も maxContentChars まで）
         → 失敗: status="error", error=message, attempts++
@@ -244,21 +249,19 @@ RSS を提供しないソース（2026-09 時点で Uber / LinkedIn）向けに�
   1'. 除外: 祖先に `nav` / `header` / `footer` / `[role=navigation]` / `[role=menu]` がある、`hreflang` 属性を持つ、`rel` に `nofollow`/`tag` を含む、正規化 URL が listingUrl 自身またはその祖先パス（セグメント単位の前方一致）と一致する、listingUrl とパス末尾のセグメント列が同じでロケール接頭辞だけ違う（`/es-ES/blog/engineering/` のような言語切替）、クエリに `page=` を含む、`source.listingExcludePattern` に一致する。カテゴリ・言語切替・ページ送りを落とすため。
      注: 「listingUrl の兄弟パス」の一律除外は採らない。Uber の記事 URL は `/us/en/blog/<slug>/` でカテゴリ（`/us/en/blog/health/`）と同じ深さのため、記事まで落ちてしまう。代わりに Uber は `listingLinkPattern` をロケール固定 `^https://www\\.uber\\.com/us/en/blog/[^/]+/?$` にし、`listingExcludePattern` に既知カテゴリ `^https://www\\.uber\\.com/us/en/blog/(engineering|health|ride|eats|transit|business|earn|merchants|community|freight|safety|company|culture|data|ai|mobile|backend|web|security|research|careers|products?)/?$` を指定して落とす。LinkedIn は記事がカテゴリより 1 段深いので既存パターンで足りる。
   1''. 単語カテゴリ除外（アンカー経路のみ。ld+json 由来の項目には適用しない）: 正規化 URL のパス末尾セグメント（末尾スラッシュを除く）がハイフンも数字も含まない 1 単語で、**かつ**規則 3 で決まるタイトル（空白正規化後）も空白を含まない 1 単語（`Health`, `Autonomous` など）なら除外する。カテゴリカードは「1 単語スラッグ＋1 単語見出し」になりがちな一方、1 単語スラッグの実記事（`/blog/michelangelo/` など）は見出しが複数語（`Michelangelo: Uber's Machine Learning Platform`）なので残る。`listingExcludePattern` の列挙漏れに対する補助的な防御。
-     残存リスク: 上記をすり抜けた未知カテゴリ・一覧ページは、本文が 800 字を超えていれば 1 件だけ記事として登録・要約（課金）され得る。listingSeenIds により同じ URL が再び対象になることはなく、maxSummariesPerRun の上限内に収まる。Uber がカテゴリを増やしたら `listingExcludePattern` を更新する。
+     残存リスク: 上記をすり抜けた未知カテゴリ・一覧ページは、本文が 800 字を超えていれば 1 件だけ記事として登録・要約（課金）され得る。DB の重複排除により同じ URL が再び対象になることはなく、maxSummariesPerRun の上限内に収まる。Uber がカテゴリを増やしたら `listingExcludePattern` を更新する。
   2. 記事リンクらしさの判定（どちらか満たせば採用）: (a) アンカー内に `h1`〜`h4` がある、(b) アンカーのテキスト（空白正規化後）が 20 文字以上かつ空白を1つ以上含む（複数語の見出しらしさ）。
   0. 構造化データ優先: `<script type="application/ld+json">` に `ItemList`（`itemListElement[].url` / `name`）または `BlogPosting` / `NewsArticle` / `Article`（`url` or `mainEntityOfPage`, `headline`, `datePublished`）があれば、それらを規則 1・1' のパターン・除外に通したうえで**優先**して採用し、アンカー走査は ld+json から 1 件も取れなかったときだけ行う。
   3. タイトル: アンカー内の見出しテキスト → 無ければアンカーのテキスト → 無ければ `aria-label` / `title` 属性。空ならスキップ。
   4. 日付: アンカー自身、または最も近い祖先 `article` / `li` / `div`（3 階層まで）の中の `time[datetime]` を `Date.parse`。無ければ `undefined`。
   5. 正規化 URL で重複除去（先勝ち）。返り値 `ListingItem { url: string; title: string; publishedAt?: number }[]`。文書順を保つ（一覧の上ほど新しいとみなす）。
-- パイプラインへの受け渡し（`listingFetcher.ts` の `fetchListingItems(source): Promise<ListingItem[]>` と `commitListingItems(source, settings, items)`）: 一覧経路はフィード経路の `commitItems` を共用せず専用の `commitListingItems` で DB 反映と source 更新を行う。**新着判定は「DB 未登録」ではなく「`source.listingSeenIds` に無い」**で行う（一覧ページには過去記事も並ぶため、DB 未登録＝新着ではない）。安全策として DB 存在チェック（bulkGet）も併用する:
-  - 実行のたびに、抽出した全件の id を `listingSeenIds` に追加する（最大 1000 件、古いものから捨てる）。
-  - 未初期化（`initialized=false`）**または `listingSeenIds` が未設定（undefined）**のとき: 文書順の先頭 1 件だけを記事として登録し、残りは「見た」ことにするだけで登録しない（seen 未設定の初期化済みソース＝旧版からの移行や seen 消失時は必ず安全側に倒す）。
-  - `upsertSources`（§8-2）は `listingSeenIds` を他の実行時フィールド（etag / lastStatus / lastFetchMode …）と同様に前回値から必ず維持する。
-  - 初期化済みのとき: `listingSeenIds` に無い id だけを新着として登録（maxNewPerSourcePerRun で上限）。
-  - `publishedAt` 未知の記事は `Article.publishedAt = createdAt`（取得時刻の仮値）とし、本文取得時にページの公開日が取れれば更新する（§8-5、§10）。`rssSummary` は無し。
+- パイプラインへの受け渡し（`listingFetcher.ts` の `fetchListingItems(source): Promise<ListingItem[]>`）: `FeedItem { title, link: url, publishedAt: publishedAt ? new Date(publishedAt) : undefined, categories: [], hasFullContent: false }` に変換し、フィード経路と共通の `commitNewItems(source, settings, candidates, "listing")`（`src/background/commit.ts`）に流す。新着判定は §8-3 と同じ「公開日が `latestPublishedAt - 猶予` より新しい」。一覧経路だけの違い:
+  - 公開日不明の項目は捨てずに登録し、`Article.publishedAt = createdAt`（取得時刻の仮値）とする。本文取得時にページの公開日で §8-5 の判定を行う（古ければ削除）。ただし **初期化済みで公開日不明の項目は文書順の先頭 1 件までしか登録しない**（一覧の並びが新しい順である前提で、過去記事を大量に拾わないため）。**未初期化のときは合計 1 件だけ**登録する: 公開日ありの候補があればその最新 1 件、無ければ公開日不明の文書順先頭 1 件（§0 の「初回は各ブログ最新 1 件」を守る）。
+  - `upsertSources`（§8-2）は `latestPublishedAt` を他の実行時フィールド（etag / lastStatus / lastFetchMode …）と同様に前回値から必ず維持する。
+  - 残存リスク: 一覧に日付が無く、記事ページからも日付が取れないページ（カテゴリなど）は 1 回だけ要約され得る。同じ URL は DB 重複排除で二度目は対象にならない。
 - 記事本文は通常どおり記事ページを Readability で抽出する。一覧ページが JS 描画のみで `<a href>` を含まない場合は 0 件になり、`lastError` に「一覧ページから記事リンクを抽出できませんでした」を記録する。
 - 設定ページ: `listingUrl` を持つソースの行に「一覧ページ抽出テスト」ボタンを出し、`TEST_LISTING` の結果を `一覧: 12件 / 最新: <title>` またはエラーで表示する。`listingUrl` の上書きは対象外（既定値のみ）。全ソース共通で「このソースの記事を削除して再取得」ボタン（`RESET_SOURCE`、確認ダイアログ付き）を置く。
-- `scripts/check-feeds.ts`: `listingUrl` を持つソースは主URL失敗時に一覧ページも取得し、jsdom で `extractListingItems` を実行して `形式=listing / 件数 / 最新タイトル` の行を追加する。一覧が 1 件以上取れれば、そのソースは失敗に数えない。
+- `scripts/check-feeds.ts`: `listingUrl` を持つソースは主URL失敗時に一覧ページも取得し、jsdom で `extractListingItems` を実行して `形式=listing / 件数 / 最新タイトル` の行を追加する。件数欄は `12件（日付あり 12）` のように一覧から公開日が取れた件数も出す。さらに先頭1件の記事ページを取得し、offscreen と同じ順序（`meta[property=article:published_time]` → `meta[name=date|pubdate|publish-date|dc.date]` → ld+json の datePublished → `time[datetime]`）で公開日が取れるかを `記事ページの日付: 2026-09-10` または `取れず` として行末に添える。一覧が 1 件以上取れれば、そのソースは失敗に数えない。
 
 ## 10. 本文抽出（`src/offscreen/`, `src/background/offscreenClient.ts`）
 
@@ -380,7 +383,7 @@ const final = await stream.finalMessage();
 - `tests/summarySchema.test.ts`: 正常 JSON / 文章に包まれた JSON / 欠損フィールド → エラー / 型違い
 - `tests/prompts.test.ts`: user プロンプトに本文取得元マーカーと切り詰めが反映される
 - `tests/readability.test.ts`（`// @vitest-environment jsdom`）: fixture HTML から 800 字以上抽出できる
-- `tests/listingCommit.test.ts`（`fake-indexeddb/auto` を import して Dexie を Node で動かす。`chrome.storage` は使わない経路のみ）: `upsertSources` を通しても `listingSeenIds` / etag / lastFetchMode が保持される / `commitListingItems` が未初期化または seen 未設定なら先頭1件だけ登録して全件を seen にする / 初期化済みなら seen に無いものだけ登録する / seen が 1000 件で古い順に切り詰められる
+- `tests/commit.test.ts`（`fake-indexeddb/auto` を import して Dexie を Node で動かす。`chrome.storage` は使わない経路のみ）: `upsertSources` を通しても `latestPublishedAt` / etag / lastFetchMode が保持される / `commitNewItems` が未初期化または latestPublishedAt 未設定なら最新1件だけ登録し latestPublishedAt をその公開日にする / 初期化済みなら基準（latestPublishedAt − 猶予）より新しいものだけ登録し latestPublishedAt が進む / 猶予内の遅れ記事は拾い、DB 重複は再登録しない / **初期化済み・latestPublishedAt 未設定のソースに過去記事20件のフィードを与えても新規登録は0件**（最新1件が既に DB にある場合）**で、かつ latestPublishedAt がその最新1件の公開日に設定され、同じ候補で2回目を実行しても added=0 のまま判定モードが通常に進んでいる** / 初期化済みで猶予内に既登録記事が maxNewPerSourcePerRun 件以上並んでいても、より新しい未登録記事が登録される（maxNewPerSourcePerRun=1 で検証）/ 一覧経路で公開日不明の項目は初期化済みでも先頭1件までしか登録されない / 未初期化の一覧経路で公開日あり2件＋不明2件を与えると公開日ありの最新1件だけが登録される / 上限超過の回に既登録の新しい候補があっても latestPublishedAt は登録分の最大値で止まり、繰り越し候補が次回拾われる
 - `tests/listingExtract.test.ts`（`// @vitest-environment jsdom`）: fixture の一覧 HTML から、パターン一致かつ見出し/20文字以上のリンクだけが文書順・重複なしで取れる / 相対 href の絶対化 / `time[datetime]` の日付 / カテゴリリンク・ページネーションが落ちる / パターン不一致で 0 件 / nav・header・footer 内、hreflang 付き、listingUrl の祖先パス、`page=` 付きが落ちる / ld+json の ItemList・BlogPosting があればそれを優先し datePublished が publishedAt になる / `listingExcludePattern` に一致する URL が落ちる / Uber の実 URL 形（記事 `/us/en/blog/<slug>/`、カテゴリ `/us/en/blog/health/`、言語切替 `/es-ES/blog/engineering/`、トップ `/us/en/blog/`）で記事だけが残る / 列挙に無い 1 単語カテゴリ（`/us/en/blog/autonomous/`、見出し `Autonomous`）が規則 1'' で落ち、1 単語スラッグでも見出しが複数語の記事（`/us/en/blog/michelangelo/`、見出し `Michelangelo: Uber's ML Platform`）と ld+json 由来の 1 単語スラッグは残る
 - `vitest.config.ts`: `environment: "node"` 既定、`include: ["tests/**/*.test.ts"]`
 
