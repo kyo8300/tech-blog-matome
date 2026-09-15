@@ -509,4 +509,48 @@ describe("extractListingItems — LinkedIn-shaped listing with text-date fallbac
       Date.UTC(2026, 6, 3), // Jul 3, 2026 (grid card 3)
     ]);
   });
+
+  it("finds the text date when there is no whitespace between the anchor and the date text (e.g. <a>...</a><span>Sep 2, 2026</span>)", () => {
+    // 要素間に空白の無い HTML: cleanTextContent が要素境界に空白を挟まないと
+    // "...HereSep 2, 2026" のように連結され、月名パターンの単語境界を失って取りこぼす。
+    const html = `<!doctype html>
+<html>
+<body>
+  <main>
+    <div><a href="https://example.com/blog/no-whitespace-date-test/"><h3>No Whitespace Between Elements Here</h3></a><span>Sep 2, 2026</span></div>
+  </main>
+</body>
+</html>`;
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    expect(doc.querySelector("time")).toBeNull();
+
+    const items = extractListingItems(doc, { baseUrl: BASE_URL, pattern: PATTERN });
+
+    expect(items).toHaveLength(1);
+    expect(items[0]!.url).toBe("https://example.com/blog/no-whitespace-date-test/");
+    expect(items[0]!.publishedAt).toBe(Date.UTC(2026, 8, 2));
+  });
+
+  it("finds the text date even when the card contains a 25,000-character inline <script> (the raw textContent exceeds the 20,000-char ancestor guard, but the cleaned text used for the guard excludes the script)", () => {
+    const bigInlineScript = "x".repeat(25_000);
+    const html = `<!doctype html>
+<html>
+<body>
+  <main>
+    <div><a href="https://example.com/blog/big-inline-script-test/"><h3>Card With A Big Inline Script</h3></a><script>var junk = "${bigInlineScript}";</script><span>Sep 2, 2026</span></div>
+  </main>
+</body>
+</html>`;
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    expect(doc.querySelector("time")).toBeNull();
+    // 生の textContent（script の中身込み）なら listingExtract.ts の MAX_TEXT_DATE_ANCESTOR_TEXT_LENGTH
+    // （20,000字）の巨大祖先ガードを超えてしまうことの確認
+    expect((doc.querySelector("div")!.textContent ?? "").length).toBeGreaterThan(20_000);
+
+    const items = extractListingItems(doc, { baseUrl: BASE_URL, pattern: PATTERN });
+
+    expect(items).toHaveLength(1);
+    expect(items[0]!.url).toBe("https://example.com/blog/big-inline-script-test/");
+    expect(items[0]!.publishedAt).toBe(Date.UTC(2026, 8, 2));
+  });
 });

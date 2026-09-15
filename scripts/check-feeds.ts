@@ -12,7 +12,7 @@ import { JSDOM } from "jsdom";
 import { DEFAULT_SOURCES } from "../src/shared/sources";
 import { parseFeed, NotXmlError, type FeedItem } from "../src/lib/feedParser";
 import { extractListingItems } from "../src/lib/listingExtract";
-import { extractPublishedAt } from "../src/lib/pageDate";
+import { extractPublishedAt, unescapeEmbeddedQuotes } from "../src/lib/pageDate";
 import { findDateTexts } from "../src/lib/dateText";
 import { normalizeUrl } from "../src/lib/urlNormalize";
 import { FEED_FETCH_TIMEOUT_MS } from "../src/shared/constants";
@@ -403,29 +403,31 @@ function debugLdJson(doc: Document): string[] {
   return out;
 }
 
-/** key: value（date/publish/created/updated 系）を最大 DEBUG_MAX_ITEMS 件抜き出す正規表現 */
-const DEBUG_BIG_JSON_KEY_RE = /"((?:published|publish|date|created|updated)[A-Za-z_]*)"\s*:\s*"([^"]{4,40})"/gi;
+/**
+ * key: value（date/publish/created/updated 系）を最大 DEBUG_MAX_ITEMS 件抜き出す正規表現。
+ * 値は `"..."`（8〜40字ではなく診断用に4〜40字と緩め）の文字列、または10〜13桁の数値 epoch。
+ */
+const DEBUG_BIG_JSON_KEY_RE =
+  /"((?:published|publish|date|created|updated)[A-Za-z_]*)"\s*:\s*("[^"]{4,40}"|\d{10,13})/gi;
 
-/** 4. __NEXT_DATA__ / __INITIAL_STATE__ 等の大きな JSON 内の日付らしき key: value */
+/**
+ * 4. __NEXT_DATA__ / __INITIAL_STATE__ / `self.__next_f.push(...)` 等、大きな JSON を
+ * 含みうる script 内の日付らしき key: value。
+ * pageDate.ts の埋め込みJSON抽出（findEmbeddedJsonPublishedAt）と同じ範囲、
+ * すなわち「ld+json 以外の全 script（type 不問）」を走査対象にする（キーワード絞り込みはしない）。
+ */
 function debugBigJson(doc: Document): string[] {
-  const texts: string[] = [];
-  const nextData = doc.querySelector("script#__NEXT_DATA__");
-  if (nextData?.textContent) texts.push(nextData.textContent);
-  const bigStateRe = /__INITIAL_STATE__|__NUXT__|__APOLLO_STATE__|__PRELOADED_STATE__|window\.__/;
-  for (const script of Array.from(doc.querySelectorAll("script:not([src])"))) {
-    if (script === nextData) continue;
-    const type = script.getAttribute("type");
-    if (type && type !== "text/javascript" && type !== "application/javascript") continue;
-    const text = script.textContent ?? "";
-    if (bigStateRe.test(text)) texts.push(text);
-  }
+  const texts = Array.from(doc.querySelectorAll("script"))
+    .filter((el) => el.getAttribute("type") !== "application/ld+json")
+    .map((el) => el.textContent ?? "");
 
-  const combined = texts.join("\n");
+  // 探索前に \u0022 / \" を " に戻す（pageDate.ts の埋め込みJSON抽出と同じデコード）
+  const combined = unescapeEmbeddedQuotes(texts.join("\n"));
   const out: string[] = [];
   DEBUG_BIG_JSON_KEY_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
   while (out.length < DEBUG_MAX_ITEMS && (m = DEBUG_BIG_JSON_KEY_RE.exec(combined))) {
-    out.push(`${m[1]}: "${m[2]}"`);
+    out.push(`${m[1]}: ${m[2]}`);
   }
   return out;
 }

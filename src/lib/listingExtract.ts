@@ -5,6 +5,7 @@
 import type { ListingItem } from "../shared/types";
 import { normalizeUrl } from "./urlNormalize";
 import { findDateTexts } from "./dateText";
+import { cleanTextContent } from "./domText";
 
 /** アンカー内の見出しとみなすタグ名 */
 const HEADING_SELECTOR = "h1, h2, h3, h4";
@@ -22,18 +23,27 @@ const MAX_ANCESTOR_DEPTH = 3;
 const MAX_TEXT_DATE_ANCESTOR_DEPTH = 6;
 
 /**
- * 規則4のテキスト日付探索で評価する祖先 textContent の最大文字数。
- * これを超える祖先は「一覧全体」を含んでいるとみなし、評価せずに探索を打ち切る
+ * 規則4のテキスト日付探索で評価する祖先の掃除済みテキスト（cleanTextContent の結果）の
+ * 最大文字数。これを超える祖先は「一覧全体」を含んでいるとみなし、評価せずに探索を打ち切る
  * （一覧ページ全体を毎回 findDateTexts に通すと、リンク数×祖先の重複走査で著しく遅くなるため）。
  */
 const MAX_TEXT_DATE_ANCESTOR_TEXT_LENGTH = 20_000;
 
 /**
- * findDateTexts(祖先のtextContent) の結果を祖先要素ごとにメモ化するキャッシュの型。
+ * 規則4のテキスト日付探索で祖先要素ごとに使うメモ化キャッシュ。
  * 一覧ページでは多数のアンカーが同じ祖先（カードのコンテナ等）を共有するため、
  * extractListingItems の呼び出し単位でキャッシュを使い回し、同じ祖先を何度も走査しない。
+ * cleanText: cleanTextContent(祖先) の結果（巨大祖先ガードの判定にも使う）。
+ * dates: findDateTexts(normalizeWhitespace(cleanText)) の結果。
  */
-type TextDateCache = WeakMap<Element, number[]>;
+interface AncestorTextCache {
+  cleanText: WeakMap<Element, string>;
+  dates: WeakMap<Element, number[]>;
+}
+
+function createAncestorTextCache(): AncestorTextCache {
+  return { cleanText: new WeakMap(), dates: new WeakMap() };
+}
 
 /** ld+json で記事一覧とみなす @type（ItemList は別扱い） */
 const LD_ARTICLE_TYPES = new Set(["BlogPosting", "NewsArticle", "Article"]);
@@ -215,27 +225,46 @@ function findDateElement(anchor: Element): Element | null {
   return null;
 }
 
+/**
+ * cache から祖先の cleanTextContent 結果を取得する。未計算ならその場で計算してキャッシュする。
+ * ancestor.textContent をそのまま使うと、空白の無い SSR 出力（`<h1>Title</h1><p>Sep 2, 2026</p>`）で
+ * 要素をまたいだテキストが `TitleSep 2, 2026` のように連結され、月名形式の日付が単語境界を失って
+ * 取りこぼされる。§10 と同じ `cleanTextContent`（script/style/noscript/template を除き、
+ * 要素境界に空白を1つ挟んで連結）を使うことでこれを避ける。巨大祖先ガード（MAX_TEXT_DATE_ANCESTOR_TEXT_LENGTH）
+ * の判定にも同じ結果を使うため、findDateTextsForAncestor とは別にメモ化する。
+ */
+function cleanTextForAncestor(ancestor: Element, cache: AncestorTextCache): string {
+  const cached = cache.cleanText.get(ancestor);
+  if (cached !== undefined) return cached;
+  const text = cleanTextContent(ancestor);
+  cache.cleanText.set(ancestor, text);
+  return text;
+}
+
 /** cache から祖先の findDateTexts 結果を取得する。未計算ならその場で計算してキャッシュする */
-function findDateTextsForAncestor(ancestor: Element, cache: TextDateCache): number[] {
-  const cached = cache.get(ancestor);
+function findDateTextsForAncestor(ancestor: Element, cache: AncestorTextCache): number[] {
+  const cached = cache.dates.get(ancestor);
   if (cached) return cached;
-  const found = findDateTexts(normalizeWhitespace(ancestor.textContent ?? ""));
-  cache.set(ancestor, found);
+  const found = findDateTexts(normalizeWhitespace(cleanTextForAncestor(ancestor, cache)));
+  cache.dates.set(ancestor, found);
   return found;
 }
 
 /**
  * 規則4のテキスト日付フォールバック: アンカーから祖先を最大6階層上り、各祖先の
- * textContent（空白正規化）に findDateTexts がちょうど1件返す最初の祖先の値を採用する
- * （複数件含む祖先は一覧全体を含んでいる可能性が高いため採用しない。LinkedIn の一覧はこの形）。
- * 祖先ごとの findDateTexts の結果は cache（WeakMap）でメモ化し（同じ祖先を複数のアンカーが
- * 共有するため）、祖先の textContent が MAX_TEXT_DATE_ANCESTOR_TEXT_LENGTH 字を超える場合は
- * 「一覧全体」とみなして評価せず探索を打ち切る。
+ * 掃除済みテキスト（cleanTextContent の結果。空白正規化後）に findDateTexts がちょうど1件
+ * 返す最初の祖先の値を採用する（複数件含む祖先は一覧全体を含んでいる可能性が高いため採用しない。
+ * LinkedIn の一覧はこの形）。祖先ごとの cleanTextContent / findDateTexts の結果は cache
+ * （WeakMap）でメモ化し（同じ祖先を複数のアンカーが共有するため）、祖先の掃除済みテキストが
+ * MAX_TEXT_DATE_ANCESTOR_TEXT_LENGTH 字を超える場合は「一覧全体」とみなして評価せず探索を打ち切る。
+ * （生の textContent 長で判定すると、カード自体は小さくても中に巨大なインライン script が
+ * 埋め込まれているだけで日付が評価されなくなってしまうため、script 等を除いた掃除済みテキストの
+ * 長さで判定する）。
  */
-function findDateFromAncestorText(anchor: Element, cache: TextDateCache): number | undefined {
+function findDateFromAncestorText(anchor: Element, cache: AncestorTextCache): number | undefined {
   let ancestor: Element | null = anchor.parentElement;
   for (let depth = 0; depth < MAX_TEXT_DATE_ANCESTOR_DEPTH && ancestor; depth++) {
-    if ((ancestor.textContent ?? "").length > MAX_TEXT_DATE_ANCESTOR_TEXT_LENGTH) break;
+    if (cleanTextForAncestor(ancestor, cache).length > MAX_TEXT_DATE_ANCESTOR_TEXT_LENGTH) break;
     const found = findDateTextsForAncestor(ancestor, cache);
     if (found.length === 1) return found[0];
     ancestor = ancestor.parentElement;
@@ -247,7 +276,7 @@ function findDateFromAncestorText(anchor: Element, cache: TextDateCache): number
  * 日時（ms epoch）を取り出す。time[datetime] があればそれを優先し、無ければ
  * 規則4のテキスト日付フォールバックを試す。どちらも取れなければ undefined。
  */
-function parseDateFromAnchor(anchor: Element, cache: TextDateCache): number | undefined {
+function parseDateFromAnchor(anchor: Element, cache: AncestorTextCache): number | undefined {
   const timeEl = findDateElement(anchor);
   const datetime = timeEl?.getAttribute("datetime");
   if (datetime) {
@@ -456,8 +485,8 @@ export function extractListingItems(
   const items: ListingItem[] = [];
   const seenUrls = new Set<string>();
   // 規則4のテキスト日付探索用キャッシュ。この呼び出し内の全アンカーで共有し、
-  // 同じ祖先要素への findDateTexts の再計算を避ける。
-  const textDateCache: TextDateCache = new WeakMap();
+  // 同じ祖先要素への cleanTextContent / findDateTexts の再計算を避ける。
+  const textDateCache: AncestorTextCache = createAncestorTextCache();
 
   for (const anchor of anchors) {
     const href = anchor.getAttribute("href");
