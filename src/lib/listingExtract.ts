@@ -4,6 +4,7 @@
 
 import type { ListingItem } from "../shared/types";
 import { normalizeUrl } from "./urlNormalize";
+import { findDateTexts } from "./dateText";
 
 /** アンカー内の見出しとみなすタグ名 */
 const HEADING_SELECTOR = "h1, h2, h3, h4";
@@ -16,6 +17,23 @@ const MIN_ANCHOR_TEXT_LENGTH = 20;
 
 /** 祖先を遡って time[datetime] を探す最大階層 */
 const MAX_ANCESTOR_DEPTH = 3;
+
+/** 規則4: time[datetime] が無いときにテキスト日付を探して遡る最大階層 */
+const MAX_TEXT_DATE_ANCESTOR_DEPTH = 6;
+
+/**
+ * 規則4のテキスト日付探索で評価する祖先 textContent の最大文字数。
+ * これを超える祖先は「一覧全体」を含んでいるとみなし、評価せずに探索を打ち切る
+ * （一覧ページ全体を毎回 findDateTexts に通すと、リンク数×祖先の重複走査で著しく遅くなるため）。
+ */
+const MAX_TEXT_DATE_ANCESTOR_TEXT_LENGTH = 20_000;
+
+/**
+ * findDateTexts(祖先のtextContent) の結果を祖先要素ごとにメモ化するキャッシュの型。
+ * 一覧ページでは多数のアンカーが同じ祖先（カードのコンテナ等）を共有するため、
+ * extractListingItems の呼び出し単位でキャッシュを使い回し、同じ祖先を何度も走査しない。
+ */
+type TextDateCache = WeakMap<Element, number[]>;
 
 /** ld+json で記事一覧とみなす @type（ItemList は別扱い） */
 const LD_ARTICLE_TYPES = new Set(["BlogPosting", "NewsArticle", "Article"]);
@@ -31,6 +49,22 @@ function isIgnorableHref(href: string): boolean {
   if (trimmed === "" || trimmed.startsWith("#")) return true;
   const lower = trimmed.toLowerCase();
   return lower.startsWith("javascript:") || lower.startsWith("mailto:");
+}
+
+/**
+ * 規則4': href を絶対化し、フラグメント（#以降）だけを取り除いた「元の URL」を返す。
+ * 末尾スラッシュやクエリはそのまま保持する（normalizeUrl はパターン判定・重複除去のキーにのみ使い、
+ * 返り値の url には使わない。Uber は末尾スラッシュ無しの URL に 404 を返すため）。
+ * パースできない場合は null。
+ */
+function toOriginalUrl(href: string, baseUrl: string): string | null {
+  try {
+    const u = new URL(href, baseUrl);
+    u.hash = "";
+    return u.href;
+  } catch {
+    return null;
+  }
 }
 
 /** ロケールコードらしいパスセグメント（"es" / "es-ES" / "en-us" / "us"(国) など、2文字±2文字ハイフン） */
@@ -181,13 +215,46 @@ function findDateElement(anchor: Element): Element | null {
   return null;
 }
 
-/** time[datetime] から日時（ms epoch）を取り出す。無効なら undefined */
-function parseDateFromAnchor(anchor: Element): number | undefined {
+/** cache から祖先の findDateTexts 結果を取得する。未計算ならその場で計算してキャッシュする */
+function findDateTextsForAncestor(ancestor: Element, cache: TextDateCache): number[] {
+  const cached = cache.get(ancestor);
+  if (cached) return cached;
+  const found = findDateTexts(normalizeWhitespace(ancestor.textContent ?? ""));
+  cache.set(ancestor, found);
+  return found;
+}
+
+/**
+ * 規則4のテキスト日付フォールバック: アンカーから祖先を最大6階層上り、各祖先の
+ * textContent（空白正規化）に findDateTexts がちょうど1件返す最初の祖先の値を採用する
+ * （複数件含む祖先は一覧全体を含んでいる可能性が高いため採用しない。LinkedIn の一覧はこの形）。
+ * 祖先ごとの findDateTexts の結果は cache（WeakMap）でメモ化し（同じ祖先を複数のアンカーが
+ * 共有するため）、祖先の textContent が MAX_TEXT_DATE_ANCESTOR_TEXT_LENGTH 字を超える場合は
+ * 「一覧全体」とみなして評価せず探索を打ち切る。
+ */
+function findDateFromAncestorText(anchor: Element, cache: TextDateCache): number | undefined {
+  let ancestor: Element | null = anchor.parentElement;
+  for (let depth = 0; depth < MAX_TEXT_DATE_ANCESTOR_DEPTH && ancestor; depth++) {
+    if ((ancestor.textContent ?? "").length > MAX_TEXT_DATE_ANCESTOR_TEXT_LENGTH) break;
+    const found = findDateTextsForAncestor(ancestor, cache);
+    if (found.length === 1) return found[0];
+    ancestor = ancestor.parentElement;
+  }
+  return undefined;
+}
+
+/**
+ * 日時（ms epoch）を取り出す。time[datetime] があればそれを優先し、無ければ
+ * 規則4のテキスト日付フォールバックを試す。どちらも取れなければ undefined。
+ */
+function parseDateFromAnchor(anchor: Element, cache: TextDateCache): number | undefined {
   const timeEl = findDateElement(anchor);
   const datetime = timeEl?.getAttribute("datetime");
-  if (!datetime) return undefined;
-  const parsed = Date.parse(datetime);
-  return Number.isNaN(parsed) ? undefined : parsed;
+  if (datetime) {
+    const parsed = Date.parse(datetime);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return findDateFromAncestorText(anchor, cache);
 }
 
 /** アンカーのタイトルを決める: 見出しテキスト → アンカーのテキスト → aria-label / title 属性 */
@@ -329,19 +396,16 @@ function buildLdListingItems(
   const seenUrls = new Set<string>();
 
   for (const raw of rawItems) {
-    let absoluteUrl: string;
-    try {
-      absoluteUrl = new URL(raw.url, opts.baseUrl).href;
-    } catch {
-      continue;
-    }
-    const normalized = normalizeUrl(absoluteUrl);
+    const originalUrl = toOriginalUrl(raw.url, opts.baseUrl);
+    if (originalUrl === null) continue;
+    // パターン判定・除外・重複除去は正規化 URL をキーにする（規則4'）。返す url は元の URL のまま。
+    const normalized = normalizeUrl(originalUrl);
     if (!opts.regex.test(normalized)) continue;
     if (isExcludedByUrl(normalized, opts.listing, opts.excludeRegex)) continue;
     if (!raw.title) continue;
     if (seenUrls.has(normalized)) continue;
     seenUrls.add(normalized);
-    items.push({ url: normalized, title: raw.title, publishedAt: raw.publishedAt });
+    items.push({ url: originalUrl, title: raw.title, publishedAt: raw.publishedAt });
   }
   return items;
 }
@@ -364,6 +428,11 @@ function buildLdListingItems(
  *   1単語なら除外する（`/blog/health/` 見出し `Health` は落ちるが、`/blog/michelangelo/` 見出し
  *   `Michelangelo: Uber's ML Platform` のような1単語スラッグの実記事は見出しが複数語なので残る）。
  * 4. 日付: アンカー自身、または最も近い祖先 article/li/div（3階層まで）の time[datetime]。
+ *   無ければテキスト日付を探す: アンカーから祖先を6階層まで順に上り、各祖先の textContent に
+ *   findDateTexts（src/lib/dateText.ts）がちょうど1件返す最初の祖先の値を採用する
+ *   （複数件含む祖先は一覧全体なので採用しない）。それでも無ければ undefined。
+ * 4'. url: 返す url はフラグメントだけを除去した絶対化済みの元の URL（末尾スラッシュ・クエリは保持）。
+ *   normalizeUrl はパターン判定（規則1）・除外判定（規則1'）・規則5の重複除去のキーにのみ使う。
  * 5. 正規化 URL で重複除去（先勝ち）。返り値は文書順（一覧の上ほど新しいとみなす）。
  * pattern / excludePattern が無効な正規表現の場合は throw する。
  */
@@ -386,19 +455,20 @@ export function extractListingItems(
 
   const items: ListingItem[] = [];
   const seenUrls = new Set<string>();
+  // 規則4のテキスト日付探索用キャッシュ。この呼び出し内の全アンカーで共有し、
+  // 同じ祖先要素への findDateTexts の再計算を避ける。
+  const textDateCache: TextDateCache = new WeakMap();
 
   for (const anchor of anchors) {
     const href = anchor.getAttribute("href");
     if (!href || isIgnorableHref(href)) continue;
 
-    let absoluteUrl: string;
-    try {
-      absoluteUrl = new URL(href, opts.baseUrl).href;
-    } catch {
-      continue;
-    }
+    const originalUrl = toOriginalUrl(href, opts.baseUrl);
+    if (originalUrl === null) continue;
 
-    const normalized = normalizeUrl(absoluteUrl);
+    // パターン判定・除外・重複除去は正規化 URL をキーにする（規則4'）。返す url は元の URL のまま
+    // （Uber は末尾スラッシュ無しの URL に 404 を返すため、正規化 URL で取得してはいけない）。
+    const normalized = normalizeUrl(originalUrl);
     if (!regex.test(normalized)) continue;
     if (isExcludedByUrl(normalized, listing, excludeRegex)) continue;
     if (isExcludedByAnchor(anchor)) continue;
@@ -417,9 +487,9 @@ export function extractListingItems(
     seenUrls.add(normalized);
 
     items.push({
-      url: normalized,
+      url: originalUrl,
       title,
-      publishedAt: parseDateFromAnchor(anchor),
+      publishedAt: parseDateFromAnchor(anchor, textDateCache),
     });
   }
 

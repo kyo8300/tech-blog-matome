@@ -13,6 +13,7 @@ import { DEFAULT_SOURCES } from "../src/shared/sources";
 import { parseFeed, NotXmlError, type FeedItem } from "../src/lib/feedParser";
 import { extractListingItems } from "../src/lib/listingExtract";
 import { extractPublishedAt } from "../src/lib/pageDate";
+import { findDateTexts } from "../src/lib/dateText";
 import { normalizeUrl } from "../src/lib/urlNormalize";
 import { FEED_FETCH_TIMEOUT_MS } from "../src/shared/constants";
 import { mapLimit } from "../src/lib/concurrency";
@@ -180,7 +181,9 @@ async function checkArticlePageDate(url: string): Promise<string> {
     const dom = new JSDOM(text, { url });
     const publishedAt = extractPublishedAt(dom.window.document);
     if (publishedAt === undefined) return "取れず";
-    return `記事ページの日付: ${new Date(publishedAt).toISOString().slice(0, 10)}`;
+    // 表の列見出しが既に「記事ページの日付」なので、セル値には日付文字列だけを入れる
+    // （見出しの重複を避ける）。
+    return new Date(publishedAt).toISOString().slice(0, 10);
   } catch {
     return "取れず";
   }
@@ -445,6 +448,12 @@ function debugBodyText(doc: Document): string {
   return clone.textContent ?? "";
 }
 
+/** 5補足: 本文テキストに findDateTexts（src/lib/dateText.ts）を通した結果を ISO 日付文字列で返す */
+function debugFindDateTexts(doc: Document): string[] {
+  const text = debugBodyText(doc);
+  return findDateTexts(text).map((epochMs) => new Date(epochMs).toISOString().slice(0, 10));
+}
+
 /** 5. 本文テキストから日付らしき文字列を前後30文字の文脈付きで抜き出す */
 function debugBodyDates(doc: Document): string[] {
   const text = debugBodyText(doc);
@@ -483,14 +492,19 @@ function debugNearestAncestorText(anchor: Element): string {
   return "";
 }
 
-/** targetUrl（normalizeUrl 済み）に一致する href を持つ最初のアンカー要素を探す */
+/**
+ * targetUrl に一致する href を持つ最初のアンカー要素を探す。
+ * extractListingItems が返す ListingItem.url は規則4'（元 URL。末尾スラッシュ等は正規化されていない）
+ * なので、両辺を normalizeUrl してから比較する。
+ */
 function debugFindAnchorForUrl(doc: Document, baseUrl: string, targetUrl: string): Element | null {
+  const normalizedTarget = normalizeUrl(targetUrl);
   for (const anchor of Array.from(doc.querySelectorAll("a[href]"))) {
     const href = anchor.getAttribute("href");
     if (!href) continue;
     try {
       const absolute = new URL(href, baseUrl).href;
-      if (normalizeUrl(absolute) === targetUrl) return anchor;
+      if (normalizeUrl(absolute) === normalizedTarget) return anchor;
     } catch {
       continue;
     }
@@ -535,6 +549,10 @@ function printDebugPageDiagnostics(doc: Document): void {
 
   printDebugHeading("5. 本文テキスト中の日付らしき文字列（前後30文字）");
   printDebugList(debugBodyDates(doc));
+  const foundDates = debugFindDateTexts(doc);
+  console.log(
+    `  findDateTexts の結果: ${foundDates.length > 0 ? foundDates.slice(0, DEBUG_MAX_ITEMS).join(", ") : "(該当なし)"}`,
+  );
 }
 
 /** --debug-dates --fixture: ネットワークに出ず、tests/fixtures の HTML を読んで自己テストする */

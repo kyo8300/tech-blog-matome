@@ -330,6 +330,14 @@ describe("extractListingItems — excludePattern, locale variants, and Uber's re
       "https://www.uber.com/us/en/blog/migrating-our-dispatch-service-off-legacy-infrastructure",
       "https://www.uber.com/us/en/blog/how-we-rebuilt-driver-matching-in-rust",
     ]);
+
+    // §9.5 規則4': 返る url は正規化前の元の URL（末尾スラッシュ付き）のまま。Uber は末尾スラッシュ
+    // 無しの URL に 404 を返すため、normalizeUrl 済みの URL を Article.url に入れてはいけない。
+    expect(items.map((item) => item.url)).toEqual([
+      "https://www.uber.com/us/en/blog/rate-limiting-at-planet-scale-with-sharded-windows/",
+      "https://www.uber.com/us/en/blog/migrating-our-dispatch-service-off-legacy-infrastructure/",
+      "https://www.uber.com/us/en/blog/how-we-rebuilt-driver-matching-in-rust/",
+    ]);
   });
 });
 
@@ -413,5 +421,92 @@ describe("extractListingItems — rule 1'' single-word category exclusion (§9.5
     const normalizedUrls = items.map((item) => normalizeUrl(item.url));
 
     expect(normalizedUrls).toContain("https://www.uber.com/us/en/blog/michelangelo");
+  });
+});
+
+describe("extractListingItems — returns the original (unnormalized) URL, not the normalized one (§9.5 規則4')", () => {
+  it("returns the exact absolute-but-unnormalized href, preserving trailing slash and query string", () => {
+    const items = extractListingItems(fixtureDoc(), { baseUrl: BASE_URL, pattern: PATTERN });
+    const alpha = items.find((item) => normalizeUrl(item.url) === "https://example.com/blog/slug-alpha");
+
+    // The fixture's href is "/blog/slug-alpha/" (trailing slash); normalizeUrl would strip it,
+    // but the returned item.url must keep it exactly as resolved against baseUrl.
+    expect(alpha?.url).toBe("https://example.com/blog/slug-alpha/");
+  });
+
+  it("dedupes by normalized URL but keeps the first occurrence's original (unnormalized) URL — utm-tagged duplicate loses", () => {
+    const items = extractListingItems(fixtureDoc(), { baseUrl: BASE_URL, pattern: PATTERN });
+    const gammaMatches = items.filter(
+      (item) => normalizeUrl(item.url) === "https://example.com/blog/slug-gamma",
+    );
+
+    expect(gammaMatches).toHaveLength(1);
+    // The fixture has two links to slug-gamma: the primary card's plain "/blog/slug-gamma/" (first
+    // in document order) and a sidebar duplicate with "?utm_source=newsletter&utm_medium=email".
+    // First occurrence wins, so the returned (unnormalized) url must be the plain one, not the
+    // utm-tagged duplicate, and must not carry the utm query string.
+    expect(gammaMatches[0].url).toBe("https://example.com/blog/slug-gamma/");
+    expect(gammaMatches[0].url).not.toContain("utm_");
+  });
+
+  it("keeps a query string other than utm/tracking params on the returned url, since only the normalized key strips it", () => {
+    // slug-zeta (?page=2) is excluded entirely by rule 1', so instead verify with a fresh doc that
+    // a non-tracking query string on an otherwise-valid article link survives on the returned url.
+    const html = `<!doctype html>
+<html><body>
+  <main>
+    <a href="/blog/slug-with-query/?ref=homepage&amp;variant=b">
+      <h3>An Article Whose Link Happens To Carry A Query String</h3>
+    </a>
+  </main>
+</body></html>`;
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const withQuery = extractListingItems(doc, { baseUrl: BASE_URL, pattern: PATTERN });
+
+    expect(withQuery).toHaveLength(1);
+    // "ref" is a tracking param stripped by normalizeUrl (used only for pattern/dedup), but the
+    // returned url is the original, unnormalized href and must still carry the full query string.
+    expect(withQuery[0].url).toBe("https://example.com/blog/slug-with-query/?ref=homepage&variant=b");
+    expect(normalizeUrl(withQuery[0].url)).toBe("https://example.com/blog/slug-with-query?variant=b");
+  });
+});
+
+describe("extractListingItems — LinkedIn-shaped listing with text-date fallback, no time elements (§9.5 規則4)", () => {
+  it("extracts publishedAt from a nearby ancestor's text date for a featured card and three grid cards, with no time[datetime] anywhere", () => {
+    const linkedinSource = DEFAULT_SOURCES.find((s) => s.id === "linkedin");
+    expect(linkedinSource?.listingUrl).toBeDefined();
+    expect(linkedinSource?.listingLinkPattern).toBeDefined();
+    if (!linkedinSource?.listingUrl || !linkedinSource.listingLinkPattern) {
+      throw new Error("src/shared/sources.ts: linkedin source is missing listingUrl/listingLinkPattern");
+    }
+
+    const doc = docFromFixture("listing-linkedin-like.html");
+    expect(doc.querySelector("time")).toBeNull();
+
+    const items = extractListingItems(doc, {
+      baseUrl: linkedinSource.listingUrl,
+      pattern: linkedinSource.listingLinkPattern,
+    });
+
+    expect(items.map((item) => item.url)).toEqual([
+      "https://www.linkedin.com/blog/engineering/search/reimagining-linkedins-search-stack",
+      "https://www.linkedin.com/blog/engineering/infrastructure/scaling-video-processing-for-a-billion-streams",
+      "https://www.linkedin.com/blog/engineering/data/rebuilding-our-streaming-pipeline-from-scratch",
+      "https://www.linkedin.com/blog/engineering/security/hardening-our-authentication-service",
+    ]);
+
+    expect(items.map((item) => item.title)).toEqual([
+      "Reimagining LinkedIn's search tech stack",
+      "Scaling Video Processing For A Billion Streams",
+      "Rebuilding Our Streaming Pipeline From Scratch",
+      "Hardening Our Authentication Service Against Credential Stuffing",
+    ]);
+
+    expect(items.map((item) => item.publishedAt)).toEqual([
+      Date.UTC(2026, 8, 2), // Sep 2, 2026 (featured card)
+      Date.UTC(2026, 7, 27), // Aug 27, 2026 (grid card 1)
+      Date.UTC(2026, 7, 24), // Aug 24, 2026 (grid card 2)
+      Date.UTC(2026, 6, 3), // Jul 3, 2026 (grid card 3)
+    ]);
   });
 });
