@@ -43,6 +43,9 @@ export const MIN_RSS_TEXT_CHARS = 200;
 /** フィード取得の並列数 */
 export const FEED_CONCURRENCY = 4;
 
+/** Source.listingSeenIds の最大保持件数（超えたら古いものから捨てる。§9.5） */
+export const LISTING_SEEN_MAX = 1000;
+
 /** SW の keepAlive 間隔（ms） */
 export const KEEP_ALIVE_INTERVAL_MS = 20_000;
 
@@ -70,4 +73,5 @@ export const DEFAULT_SETTINGS: Settings = {
   summaryConcurrency: 3,
   maxContentChars: 60000,
   maxNewPerSourcePerRun: 20,
+  maxSummariesPerRun: 30,
 };

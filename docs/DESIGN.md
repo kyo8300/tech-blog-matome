@@ -35,7 +35,7 @@
 ## 2. 依存パッケージ（確認済みバージョン）
 
 dependencies: `@anthropic-ai/sdk ^0.125`, `@mozilla/readability ^0.6`, `dexie ^4.4`, `dexie-react-hooks ^4.4`, `fast-xml-parser ^5.11`, `react ^19.3`, `react-dom ^19.3`, `zod ^4.6`
-devDependencies: `@crxjs/vite-plugin ^2.7`, `@types/chrome ^0.2`, `@types/node ^22`, `@types/react ^19`, `@types/react-dom ^19`, `@vitejs/plugin-react ^5.2`, `jsdom ^30`, `playwright ^1.63`, `tsx ^4.23`, `typescript ^5.9`, `vite ^7.3`, `vitest ^4.1`
+devDependencies: `@crxjs/vite-plugin ^2.7`, `@types/chrome ^0.2`, `@types/node ^22`, `@types/react ^19`, `@types/react-dom ^19`, `@vitejs/plugin-react ^5.2`, `fake-indexeddb ^6`, `jsdom ^30`, `playwright ^1.63`, `tsx ^4.23`, `typescript ^5.9`, `vite ^7.3`, `vitest ^4.1`
 
 npm scripts: `dev` / `build` / `typecheck`（tsc --noEmit）/ `test`（vitest run）/ `check-feeds`（tsx scripts/check-feeds.ts）/ `gen-icons` / `smoke`（Playwright煙テスト）
 
@@ -99,6 +99,8 @@ interface Source {
   etag?: string; lastModified?: string; lastFetchedAt?: number;
   listingUrl?: string;             // フィードが無い/壊れているソース用の HTML 一覧ページ（§9.5）
   listingLinkPattern?: string;     // 一覧ページ内で記事URLとみなす正規表現（正規化後の絶対URLに対して適用）
+  listingExcludePattern?: string;  // 正規化後の絶対URLがこれに一致したら記事とみなさない（カテゴリ等。§9.5 規則 1'）
+  listingSeenIds?: string[];       // 一覧経路で「見たことがある」記事ID（sha256）。新着判定に使う。最大 1000 件、古いものから捨てる（§9.5）
   lastStatus?: "ok" | "error"; lastError?: string; lastItemCount?: number;
   lastFetchMode?: "feed" | "listing";  // 直近の実行でどちらの経路で取得したか
 }
@@ -128,7 +130,7 @@ interface Settings {
   intervalMinutes: number /* 1440 */; notificationsEnabled: boolean /* true */;
   enabledSources: string[]; feedUrlOverrides: Record<string, string>;
   summaryConcurrency: number /* 3 */; maxContentChars: number /* 60000 */;
-  maxNewPerSourcePerRun: number /* 20 */; lastRunAt?: number;
+  maxNewPerSourcePerRun: number /* 20 */; maxSummariesPerRun: number /* 30 */; lastRunAt?: number;
 }
 
 interface PipelineProgress {
@@ -181,9 +183,10 @@ type Message =
   | { type: "SETTINGS_CHANGED" }                            // 設定→SW。アラーム再評価
   | { type: "OPEN_APP"; articleId?: string }
   | { type: "RESET_ALL" }                                   // 全テーブル削除、sources を未初期化に
+  | { type: "RESET_SOURCE"; sourceId: string }              // 設定→SW。そのソースの記事・チャットを削除し、initialized=false / listingSeenIds=[] / etag 等をクリア。返答 { ok, deleted, error? }。パイプライン実行中（progress.running かつ startedAt から LOCK_STALE_MS 未満）は { ok:false, error:"更新の実行中は削除できません" } を返す。設定ページも同じ判定（running かつ startedAt + LOCK_STALE_MS > now）でボタンを無効化し、古いロックが残っていても SW と同じタイミングで押せるようにする
   | { type: "PROGRESS"; progress: PipelineProgress }        // SW→ページ（受信者がいなければ例外→握りつぶす）
   | { type: "OFFSCREEN_EXTRACT"; target: "offscreen"; html: string; url: string }  // 返答 { title?, text, excerpt? }
-  | { type: "OFFSCREEN_EXTRACT_LINKS"; target: "offscreen"; html: string; url: string; pattern: string }; // 返答 { items: ListingItem[] }（§9.5）
+  | { type: "OFFSCREEN_EXTRACT_LINKS"; target: "offscreen"; html: string; url: string; pattern: string; excludePattern?: string }; // 返答 { items: ListingItem[] }（§9.5）
 ```
 チャット・既読・フィルタ・記事一覧はSWを通さず、ページから Dexie / SDK を直接使う。
 
@@ -201,11 +204,14 @@ runPipeline(trigger)
       → status:"new", rssSummary: htmlToText(content ?? description), contentSource:"none" で bulkAdd
       → source 更新（initialized=true, etag, lastItemCount）、progress.feedsDone++
  4. 取り残し回収: status:"new" 全件 + `summarizingAt` が15分以上前（SUMMARIZING_STALE_MS）の "summarizing"（SW死亡）を "new" に戻して対象に追加。`summarizingAt` が無い "summarizing" も孤児として回収する
- 5. SUMMARIZE（並列 summaryConcurrency）: APIキー未設定なら "new" のまま残し errors に「APIキー未設定」
+ 5. SUMMARIZE（並列 summaryConcurrency）: APIキー未設定なら "new" のまま残し errors に「APIキー未設定」。対象は publishedAt 降順（不明は末尾）で先頭 maxSummariesPerRun 件まで。残りは "new" のまま次回に回し、errors に「上限 N 件に達したため M 件を次回に繰り越し」
+      課金・認証エラー（AuthenticationError、または 400 の message に "credit balance" を含む）が1件でも出たら、残りの記事は "new" に戻して即座にバッチを打ち切り、errors に「APIの残高不足または認証エラーのため中断」を1回だけ入れる
       各記事: status="summarizing"
         → fetchArticleHtml(url, 20s, 3MB上限, content-type が text/html でなければ null)
         → offscreen で Readability → text
-        → text が 800 字未満なら rssSummary を使う（contentSource="rss"）。それも 200 字未満なら contentSource="none"（タイトル+概要で要約）
+        → text が 800 字未満なら rssSummary を使う（contentSource="rss"）。それも 200 字未満なら contentSource="none"
+        → ページから公開日（ExtractResult.publishedAt）が取れ、Article.publishedAt が取得時刻の仮値（createdAt と等しい）なら publishedAt を更新する（**要約の成否・スキップにかかわらず**、本文取得直後に行う）
+        → contentSource="none" かつ rssSummary が無い（一覧経路など）場合は **要約せず** status="error", error="本文を取得できなかったため要約をスキップしました"（attempts++。タイトルだけの要約に課金しない）
         → summarizeArticle(text, contentSource, maxContentChars) → status="done", summary, model, summarizedAt（切り詰めは summarizeArticle → buildSummaryUser の1か所で行う。DB に保存する contentText も maxContentChars まで）
         → 失敗: status="error", error=message, attempts++
       progress.articlesDone++ → PROGRESS 送信
@@ -232,16 +238,26 @@ RSS を提供しないソース（2026-09 時点で Uber / LinkedIn）向けに�
 
 - 発動条件: `source.listingUrl` が設定されていて、かつフィード取得（主URL）が HTTP エラー / NotXmlError / ネットワークエラーのいずれかで失敗したとき。フィードが成功したときは使わない。
 - 取得: SW で `fetchArticleHtml(listingUrl, 20s, 3MB)`（`articleFetcher.ts` を再利用。text/html 以外は失敗扱い）。条件付き GET は使わない。
-- 抽出（offscreen、`OFFSCREEN_EXTRACT_LINKS`）: `DOMParser` で解析 → `<base href={url}>` を挿入 → `extractListingItems(doc, { baseUrl, pattern })`（`src/lib/listingExtract.ts`）。
+- 抽出（offscreen、`OFFSCREEN_EXTRACT_LINKS`）: `DOMParser` で解析 → `<base href={url}>` を挿入 → `extractListingItems(doc, { baseUrl, pattern, excludePattern? })`（`src/lib/listingExtract.ts`）。
 - `extractListingItems` の規則:
   1. `doc.querySelectorAll("a[href]")` を文書順に走査し、`new URL(href, baseUrl)` で絶対化 → `normalizeUrl` → `new RegExp(pattern)` にマッチするものだけ候補にする。`javascript:` / `mailto:` / `#` は除外。
-  2. 記事リンクらしさの判定（どちらか満たせば採用）: (a) アンカー内に `h1`〜`h4` がある、(b) アンカーのテキスト（空白正規化後）が 20 文字以上。カテゴリやページネーションのリンクを落とすため。
+  1'. 除外: 祖先に `nav` / `header` / `footer` / `[role=navigation]` / `[role=menu]` がある、`hreflang` 属性を持つ、`rel` に `nofollow`/`tag` を含む、正規化 URL が listingUrl 自身またはその祖先パス（セグメント単位の前方一致）と一致する、listingUrl とパス末尾のセグメント列が同じでロケール接頭辞だけ違う（`/es-ES/blog/engineering/` のような言語切替）、クエリに `page=` を含む、`source.listingExcludePattern` に一致する。カテゴリ・言語切替・ページ送りを落とすため。
+     注: 「listingUrl の兄弟パス」の一律除外は採らない。Uber の記事 URL は `/us/en/blog/<slug>/` でカテゴリ（`/us/en/blog/health/`）と同じ深さのため、記事まで落ちてしまう。代わりに Uber は `listingLinkPattern` をロケール固定 `^https://www\\.uber\\.com/us/en/blog/[^/]+/?$` にし、`listingExcludePattern` に既知カテゴリ `^https://www\\.uber\\.com/us/en/blog/(engineering|health|ride|eats|transit|business|earn|merchants|community|freight|safety|company|culture|data|ai|mobile|backend|web|security|research|careers|products?)/?$` を指定して落とす。LinkedIn は記事がカテゴリより 1 段深いので既存パターンで足りる。
+  1''. 単語カテゴリ除外（アンカー経路のみ。ld+json 由来の項目には適用しない）: 正規化 URL のパス末尾セグメント（末尾スラッシュを除く）がハイフンも数字も含まない 1 単語で、**かつ**規則 3 で決まるタイトル（空白正規化後）も空白を含まない 1 単語（`Health`, `Autonomous` など）なら除外する。カテゴリカードは「1 単語スラッグ＋1 単語見出し」になりがちな一方、1 単語スラッグの実記事（`/blog/michelangelo/` など）は見出しが複数語（`Michelangelo: Uber's Machine Learning Platform`）なので残る。`listingExcludePattern` の列挙漏れに対する補助的な防御。
+     残存リスク: 上記をすり抜けた未知カテゴリ・一覧ページは、本文が 800 字を超えていれば 1 件だけ記事として登録・要約（課金）され得る。listingSeenIds により同じ URL が再び対象になることはなく、maxSummariesPerRun の上限内に収まる。Uber がカテゴリを増やしたら `listingExcludePattern` を更新する。
+  2. 記事リンクらしさの判定（どちらか満たせば採用）: (a) アンカー内に `h1`〜`h4` がある、(b) アンカーのテキスト（空白正規化後）が 20 文字以上かつ空白を1つ以上含む（複数語の見出しらしさ）。
+  0. 構造化データ優先: `<script type="application/ld+json">` に `ItemList`（`itemListElement[].url` / `name`）または `BlogPosting` / `NewsArticle` / `Article`（`url` or `mainEntityOfPage`, `headline`, `datePublished`）があれば、それらを規則 1・1' のパターン・除外に通したうえで**優先**して採用し、アンカー走査は ld+json から 1 件も取れなかったときだけ行う。
   3. タイトル: アンカー内の見出しテキスト → 無ければアンカーのテキスト → 無ければ `aria-label` / `title` 属性。空ならスキップ。
   4. 日付: アンカー自身、または最も近い祖先 `article` / `li` / `div`（3 階層まで）の中の `time[datetime]` を `Date.parse`。無ければ `undefined`。
   5. 正規化 URL で重複除去（先勝ち）。返り値 `ListingItem { url: string; title: string; publishedAt?: number }[]`。文書順を保つ（一覧の上ほど新しいとみなす）。
-- パイプラインへの受け渡し（`listingFetcher.ts` の `fetchListing(source): Promise<FeedItem[]>`）: `FeedItem { title, link: url, publishedAt: publishedAt ? new Date(publishedAt) : undefined, categories: [], hasFullContent: false }` に変換して §8-3 の「categoryFilter 適用 → 未登録抽出」以降に合流する。`publishedAt` 未知の記事は `Article.publishedAt = createdAt`（取得時刻）とし、未初期化ソースの「最新1件」は文書順の先頭を使う。`rssSummary` は無し（`contentSource` は本文取得の結果で決まる）。
+- パイプラインへの受け渡し（`listingFetcher.ts` の `fetchListingItems(source): Promise<ListingItem[]>` と `commitListingItems(source, settings, items)`）: 一覧経路はフィード経路の `commitItems` を共用せず専用の `commitListingItems` で DB 反映と source 更新を行う。**新着判定は「DB 未登録」ではなく「`source.listingSeenIds` に無い」**で行う（一覧ページには過去記事も並ぶため、DB 未登録＝新着ではない）。安全策として DB 存在チェック（bulkGet）も併用する:
+  - 実行のたびに、抽出した全件の id を `listingSeenIds` に追加する（最大 1000 件、古いものから捨てる）。
+  - 未初期化（`initialized=false`）**または `listingSeenIds` が未設定（undefined）**のとき: 文書順の先頭 1 件だけを記事として登録し、残りは「見た」ことにするだけで登録しない（seen 未設定の初期化済みソース＝旧版からの移行や seen 消失時は必ず安全側に倒す）。
+  - `upsertSources`（§8-2）は `listingSeenIds` を他の実行時フィールド（etag / lastStatus / lastFetchMode …）と同様に前回値から必ず維持する。
+  - 初期化済みのとき: `listingSeenIds` に無い id だけを新着として登録（maxNewPerSourcePerRun で上限）。
+  - `publishedAt` 未知の記事は `Article.publishedAt = createdAt`（取得時刻の仮値）とし、本文取得時にページの公開日が取れれば更新する（§8-5、§10）。`rssSummary` は無し。
 - 記事本文は通常どおり記事ページを Readability で抽出する。一覧ページが JS 描画のみで `<a href>` を含まない場合は 0 件になり、`lastError` に「一覧ページから記事リンクを抽出できませんでした」を記録する。
-- 設定ページ: `listingUrl` を持つソースの行に「一覧ページ抽出テスト」ボタンを出し、`TEST_LISTING` の結果を `一覧: 12件 / 最新: <title>` またはエラーで表示する。`listingUrl` の上書きは対象外（既定値のみ）。
+- 設定ページ: `listingUrl` を持つソースの行に「一覧ページ抽出テスト」ボタンを出し、`TEST_LISTING` の結果を `一覧: 12件 / 最新: <title>` またはエラーで表示する。`listingUrl` の上書きは対象外（既定値のみ）。全ソース共通で「このソースの記事を削除して再取得」ボタン（`RESET_SOURCE`、確認ダイアログ付き）を置く。
 - `scripts/check-feeds.ts`: `listingUrl` を持つソースは主URL失敗時に一覧ページも取得し、jsdom で `extractListingItems` を実行して `形式=listing / 件数 / 最新タイトル` の行を追加する。一覧が 1 件以上取れれば、そのソースは失敗に数えない。
 
 ## 10. 本文抽出（`src/offscreen/`, `src/background/offscreenClient.ts`）
@@ -257,7 +273,7 @@ async function ensureOffscreen() {
   await creating;
 }
 ```
-offscreen 側: `new DOMParser().parseFromString(html, "text/html")` → `<base href={url}>` を挿入 → `new Readability(doc).parse()` → `{ title, text: textContent を空白正規化, excerpt }` を返す。fetch は SW 側で行い、offscreen は解析だけ。HTML は 3MB で打ち切ってから送る。offscreen の利用は `acquire()` / `release()` の参照カウントで管理し、利用者がゼロになったときだけ `chrome.offscreen.closeDocument()`（例外は無視）。
+offscreen 側: `new DOMParser().parseFromString(html, "text/html")` → `<base href={url}>` を挿入 → `new Readability(doc).parse()` → `{ title, text: textContent を空白正規化, excerpt, publishedAt? }` を返す。`publishedAt` は Readability の前に `meta[property="article:published_time"]` → `meta[name="date"|"pubdate"|"publish-date"|"dc.date"]` → ld+json の `datePublished` → `article time[datetime]` / `time[datetime]` の順で探し `Date.parse` できた最初の値（epoch ms）。fetch は SW 側で行い、offscreen は解析だけ。HTML は 3MB で打ち切ってから送る。offscreen の利用は `acquire()` / `release()` の参照カウントで管理し、利用者がゼロになったときだけ `chrome.offscreen.closeDocument()`（例外は無視）。
 
 ## 11. Claude 連携（`src/lib/claudeClient.ts`, `prompts.ts`, `summarySchema.ts`）
 
@@ -330,7 +346,7 @@ const final = await stream.finalMessage();
 - 自動更新間隔（6時間 / 12時間 / 24時間（既定）/ 48時間 / 無効）
 - 新着通知 ON/OFF
 - ソース一覧: 行ごとに 有効トグル・名前・フィードURL入力（上書き）・「フィード接続テスト」→ `HTTP 200 / 25件 / 本文あり / 最新: <title>` またはエラー ・「候補URLを試す」（`altFeedUrls` を順にテストし、成功したものを上書きに採用）・「一覧ページ抽出テスト」（`listingUrl` があるソースのみ。§9.5）
-- 詳細: 同時要約数（1〜4）/ 本文の最大文字数 / 1回の更新あたりの最大新着数
+- 詳細: 同時要約数（1〜4）/ 本文の最大文字数 / 1回の更新あたりの最大新着数（ソースごと）/ 1回の更新あたりの最大要約数（全体。既定 30）
 - 危険な操作: 「全データを削除して初期状態に戻す」→ `RESET_ALL`（確認ダイアログ付き）
 - 保存で `chrome.storage.local` に書き `SETTINGS_CHANGED` を送る
 
@@ -364,7 +380,8 @@ const final = await stream.finalMessage();
 - `tests/summarySchema.test.ts`: 正常 JSON / 文章に包まれた JSON / 欠損フィールド → エラー / 型違い
 - `tests/prompts.test.ts`: user プロンプトに本文取得元マーカーと切り詰めが反映される
 - `tests/readability.test.ts`（`// @vitest-environment jsdom`）: fixture HTML から 800 字以上抽出できる
-- `tests/listingExtract.test.ts`（`// @vitest-environment jsdom`）: fixture の一覧 HTML から、パターン一致かつ見出し/20文字以上のリンクだけが文書順・重複なしで取れる / 相対 href の絶対化 / `time[datetime]` の日付 / カテゴリリンク・ページネーションが落ちる / パターン不一致で 0 件
+- `tests/listingCommit.test.ts`（`fake-indexeddb/auto` を import して Dexie を Node で動かす。`chrome.storage` は使わない経路のみ）: `upsertSources` を通しても `listingSeenIds` / etag / lastFetchMode が保持される / `commitListingItems` が未初期化または seen 未設定なら先頭1件だけ登録して全件を seen にする / 初期化済みなら seen に無いものだけ登録する / seen が 1000 件で古い順に切り詰められる
+- `tests/listingExtract.test.ts`（`// @vitest-environment jsdom`）: fixture の一覧 HTML から、パターン一致かつ見出し/20文字以上のリンクだけが文書順・重複なしで取れる / 相対 href の絶対化 / `time[datetime]` の日付 / カテゴリリンク・ページネーションが落ちる / パターン不一致で 0 件 / nav・header・footer 内、hreflang 付き、listingUrl の祖先パス、`page=` 付きが落ちる / ld+json の ItemList・BlogPosting があればそれを優先し datePublished が publishedAt になる / `listingExcludePattern` に一致する URL が落ちる / Uber の実 URL 形（記事 `/us/en/blog/<slug>/`、カテゴリ `/us/en/blog/health/`、言語切替 `/es-ES/blog/engineering/`、トップ `/us/en/blog/`）で記事だけが残る / 列挙に無い 1 単語カテゴリ（`/us/en/blog/autonomous/`、見出し `Autonomous`）が規則 1'' で落ち、1 単語スラッグでも見出しが複数語の記事（`/us/en/blog/michelangelo/`、見出し `Michelangelo: Uber's ML Platform`）と ld+json 由来の 1 単語スラッグは残る
 - `vitest.config.ts`: `environment: "node"` 既定、`include: ["tests/**/*.test.ts"]`
 
 ## 16. README.md（日本語）に書くこと

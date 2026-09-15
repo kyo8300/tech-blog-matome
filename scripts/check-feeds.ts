@@ -182,6 +182,7 @@ async function checkListing(source: Source): Promise<CheckResult> {
     const items = extractListingItems(dom.window.document, {
       baseUrl: source.listingUrl!,
       pattern: source.listingLinkPattern!,
+      excludePattern: source.listingExcludePattern,
     });
 
     if (items.length === 0) {

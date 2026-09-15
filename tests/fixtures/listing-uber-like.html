@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Uber Engineering Blog</title>
+</head>
+<body>
+  <header class="site-header">
+    <nav class="categories">
+      <a href="/us/en/blog/engineering/">Engineering</a>
+      <a href="/us/en/blog/ride/">Ride</a>
+    </nav>
+  </header>
+
+  <main>
+    <h1>Engineering</h1>
+
+    <article class="post-card">
+      <a href="/us/en/blog/rate-limiting-at-planet-scale-with-sharded-windows/">
+        <h3>Rate Limiting At Planet Scale With Sharded Sliding Windows</h3>
+      </a>
+    </article>
+
+    <article class="post-card">
+      <a href="/us/en/blog/migrating-our-dispatch-service-off-legacy-infrastructure/">
+        <h3>Migrating Our Dispatch Service Off Legacy Infrastructure</h3>
+      </a>
+    </article>
+
+    <article class="post-card">
+      <a href="/us/en/blog/how-we-rebuilt-driver-matching-in-rust/">
+        <h3>How We Rebuilt Driver Matching In Rust</h3>
+      </a>
+    </article>
+
+    <!-- category links, deliberately NOT inside <nav>/<header>/<footer>, so this only gets
+         dropped if listingExcludePattern (not the ancestor-based rule) is applied correctly -->
+    <div class="category-card">
+      <a href="/us/en/blog/health/">
+        <h3>Browse All Posts In The Health Category</h3>
+      </a>
+    </div>
+    <div class="category-card">
+      <a href="/us/en/blog/data/">
+        <h3>Browse All Posts In The Data Category</h3>
+      </a>
+    </div>
+
+    <!-- language switcher, deliberately without hreflang and NOT inside nav, so this only gets
+         dropped because it doesn't match the locale-fixed listingLinkPattern (or, if the pattern
+         were widened, the locale-variant / hreflang rules) -->
+    <div class="lang-switch">
+      <a href="https://www.uber.com/es-ES/blog/engineering/">
+        <h3>Spanish Language Version Of The Engineering Blog Listing</h3>
+      </a>
+    </div>
+
+    <!-- top of the blog (an ancestor of listingUrl, and outside the fixed us/en locale pattern) -->
+    <div class="top-link">
+      <a href="/us/en/blog/">
+        <h3>Return To The Top Of The Engineering Blog</h3>
+      </a>
+    </div>
+  </main>
+
+  <footer>
+    <p>&copy; 2026 Uber Technologies, Inc.</p>
+  </footer>
+</body>
+</html>

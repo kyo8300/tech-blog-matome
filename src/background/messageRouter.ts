@@ -1,13 +1,12 @@
 // §7: SW 宛メッセージ（target 未指定 = "background"）のルーティング。
 
 import { listen } from "../shared/messages";
-import { loadSettings } from "../shared/settings";
-import { LOCK_STALE_MS } from "../shared/constants";
+import { isLockActive, loadSettings } from "../shared/settings";
 import { getDb } from "../shared/db";
 import { DEFAULT_SOURCES } from "../shared/sources";
 import { testFeed } from "./feedFetcher";
 import { testListing } from "./listingFetcher";
-import { runPipeline, resummarize, refetchContent, resetAll, queuePendingTrigger } from "./pipeline";
+import { runPipeline, resummarize, refetchContent, resetAll, resetSource, queuePendingTrigger } from "./pipeline";
 import { getProgress } from "./progress";
 import { ensureAlarm } from "./alarms";
 import { openApp } from "./openApp";
@@ -15,8 +14,7 @@ import { openApp } from "./openApp";
 /** 実行中でロック中なら理由を返す（そうでなければ undefined） */
 async function checkLocked(): Promise<string | undefined> {
   const progress = await getProgress();
-  const now = Date.now();
-  if (progress.running && progress.startedAt !== undefined && now - progress.startedAt < LOCK_STALE_MS) {
+  if (isLockActive(progress)) {
     return "既に更新処理が実行中です";
   }
   return undefined;
@@ -94,6 +92,15 @@ export function registerMessageRouter(): void {
         return (async () => {
           await resetAll();
           return { ok: true };
+        })();
+
+      case "RESET_SOURCE":
+        return (async () => {
+          try {
+            return await resetSource(msg.sourceId);
+          } catch (err) {
+            return { ok: false, deleted: 0, error: err instanceof Error ? err.message : String(err) };
+          }
         })();
 
       default:

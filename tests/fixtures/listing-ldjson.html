@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Acme Engineering Blog</title>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "ItemList",
+    "itemListElement": [
+      { "@type": "ListItem", "position": 1, "url": "https://example.com/blog/ld-alpha/", "name": "LD JSON Alpha Post Title" },
+      { "@type": "ListItem", "position": 2, "url": "https://example.com/blog/ld-beta/", "name": "LD JSON Beta Post Title" },
+      { "@type": "ListItem", "position": 3, "url": "https://example.com/blog/ld-gamma/", "name": "LD JSON Gamma Post Title" }
+    ]
+  }
+  </script>
+</head>
+<body>
+  <main>
+    <h1>Latest posts</h1>
+
+    <!-- These anchor-based article cards must be completely ignored: the ld+json ItemList above
+         already yielded 3 items, so anchor scanning must not run at all. If any of these leak
+         into the result, rule 0 (ld+json priority) is not correctly short-circuiting rule 1/2. -->
+    <article class="post-card">
+      <a href="/blog/anchor-should-be-ignored-1/">
+        <h3>This Anchor-Based Article Must Be Ignored Because LD+JSON Already Won</h3>
+      </a>
+      <time datetime="2026-09-05T00:00:00Z">September 5, 2026</time>
+    </article>
+
+    <article class="post-card">
+      <a href="/blog/anchor-should-be-ignored-2/">
+        <h3>Another Anchor-Based Article That Must Also Be Ignored Entirely</h3>
+      </a>
+    </article>
+  </main>
+</body>
+</html>

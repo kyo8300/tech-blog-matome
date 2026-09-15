@@ -4,15 +4,15 @@ import Dexie from "dexie";
 import type { Article, Settings, Source } from "../shared/types";
 import { getDb } from "../shared/db";
 import { DEFAULT_SOURCES } from "../shared/sources";
-import { IDLE_PROGRESS, loadProgress, loadSettings, saveProgress, saveSettings } from "../shared/settings";
-import { FEED_CONCURRENCY, FEED_FETCH_TIMEOUT_MS, LOCK_STALE_MS, SUMMARIZING_STALE_MS } from "../shared/constants";
+import { IDLE_PROGRESS, isLockActive, loadProgress, loadSettings, saveProgress, saveSettings } from "../shared/settings";
+import { FEED_CONCURRENCY, FEED_FETCH_TIMEOUT_MS, SUMMARIZING_STALE_MS } from "../shared/constants";
 import { sha256Hex } from "../lib/hash";
 import { normalizeUrl } from "../lib/urlNormalize";
 import { htmlToText } from "../lib/htmlToText";
 import { parseFeed, filterByCategory, NotXmlError, type FeedItem } from "../lib/feedParser";
 import { mapLimit } from "../lib/concurrency";
 import { fetchFeed, testFeed as testFeedImpl } from "./feedFetcher";
-import { fetchListing } from "./listingFetcher";
+import { fetchListingItems, commitListingItems } from "./listingFetcher";
 import { summarizeOne } from "./summarizer";
 import * as offscreenPool from "./offscreenClient";
 import { notifyRun } from "./notifications";
@@ -29,8 +29,10 @@ export const testFeed = testFeedImpl;
 
 /**
  * 有効ソースを feedUrlOverrides でマージして db.sources に upsert する。
- * 既存の etag/lastModified/initialized/lastFetchedAt/lastStatus/lastError/lastItemCount/lastFetchMode は維持する
- * （ただし feedUrl 自体が変わった場合は etag/lastModified は無効になるためリセットする）。
+ * 既存の etag/lastModified/initialized/lastFetchedAt/lastStatus/lastError/lastItemCount/lastFetchMode/listingSeenIds
+ * は維持する（ただし feedUrl 自体が変わった場合は etag/lastModified は無効になるためリセットする）。
+ * listingSeenIds を維持し忘れると一覧経路の「見たことがある」記録が毎回消え、
+ * 過去記事が繰り返し新着扱いになってしまうため他の実行時フィールドと同様に必ず引き継ぐ。
  */
 export async function upsertSources(settings: Settings): Promise<Source[]> {
   const db = getDb();
@@ -52,6 +54,7 @@ export async function upsertSources(settings: Settings): Promise<Source[]> {
       lastError: prev?.lastError,
       lastItemCount: prev?.lastItemCount,
       lastFetchMode: prev?.lastFetchMode,
+      listingSeenIds: prev?.listingSeenIds,
     };
   });
 
@@ -65,20 +68,19 @@ function sortByPublishedDesc(items: FeedItem[]): FeedItem[] {
 }
 
 /**
- * フィルタ・dedupe・上限適用・bulkAdd・source更新までを行う（フィード経由/一覧経由で共通）。
- * mode:"listing" のときは publishedAt でのソートをせず、文書順（一覧の上ほど新しい）を保つ。
+ * フィード経由でのフィルタ・dedupe・上限適用・bulkAdd・source更新までを行う。
+ * 一覧経由（§9.5）は listingSeenIds ベースの新着判定を行う commitListingItems を別途使う。
  * 新規追加できた記事数を返す。
  */
 async function commitItems(
   source: Source,
   settings: Settings,
   items: FeedItem[],
-  mode: "feed" | "listing",
   feedMeta?: { etag?: string; lastModified?: string },
 ): Promise<number> {
   const db = getDb();
   const filtered = filterByCategory(items, source.categoryFilter);
-  const sorted = mode === "feed" ? sortByPublishedDesc(filtered) : filtered;
+  const sorted = sortByPublishedDesc(filtered);
 
   // URL正規化+sha256 で id を計算する。同じ id が複数回出てくることがある
   // （フィードが同じ記事を複数エントリで掲載している等）ため、先に現れたものだけ残して dedupe する。
@@ -133,12 +135,13 @@ async function commitItems(
 
   await db.sources.update(source.id, {
     initialized: true,
-    ...(mode === "feed" ? { etag: feedMeta?.etag, lastModified: feedMeta?.lastModified } : {}),
+    etag: feedMeta?.etag,
+    lastModified: feedMeta?.lastModified,
     lastFetchedAt: Date.now(),
     lastStatus: "ok",
     lastError: undefined,
     lastItemCount: items.length,
-    lastFetchMode: mode,
+    lastFetchMode: "feed",
   });
 
   return addedCount;
@@ -183,8 +186,8 @@ async function processSource(source: Source, settings: Settings): Promise<number
 
     // §9.5: フィード取得/解析に失敗した場合、一覧ページフォールバックに切り替える
     try {
-      const listingItems = await fetchListing(source);
-      return await commitItems(source, settings, listingItems, "listing");
+      const listingItems = await fetchListingItems(source);
+      return await commitListingItems(source, settings, listingItems);
     } catch (listingErr) {
       const listingMessage =
         listingErr instanceof Error ? listingErr.message : String(listingErr);
@@ -198,7 +201,7 @@ async function processSource(source: Source, settings: Settings): Promise<number
   }
 
   try {
-    return await commitItems(source, settings, items, "feed", {
+    return await commitItems(source, settings, items, {
       etag: feedResult.etag,
       lastModified: feedResult.lastModified,
     });
@@ -258,7 +261,24 @@ export interface SummarizeBatchResult {
   errors: string[];
 }
 
-/** §8-5: 記事IDの一覧を summaryConcurrency 並列で要約する */
+/** ids を Article.publishedAt 降順（不明・未取得は末尾）に並べ替える */
+async function sortIdsByPublishedDesc(ids: string[]): Promise<string[]> {
+  const db = getDb();
+  const articles = await db.articles.bulkGet(ids);
+  return ids
+    .map((id, i) => ({ id, publishedAt: articles[i]?.publishedAt ?? 0 }))
+    .sort((a, b) => b.publishedAt - a.publishedAt)
+    .map((w) => w.id);
+}
+
+/**
+ * §8-5: 記事IDの一覧を summaryConcurrency 並列で要約する。
+ * publishedAt 降順で settings.maxSummariesPerRun 件までに絞り、残りは "new" のまま次回に繰り越す
+ * （繰り越された記事はまだ summarizeOne を呼んでいないので、DBの状態は "new" のままで変更不要）。
+ * 課金・認証エラー（isBillingOrAuthError）が1件でも出たら、以降まだ着手していない記事の
+ * summarizeOne 呼び出しを打ち切る（既に呼び出し中の記事は完了まで待つ。mapLimit の各 fn が
+ * 開始時に aborted フラグを見て即 return することで実現する）。
+ */
 export async function summarizeBatch(ids: string[], settings: Settings): Promise<SummarizeBatchResult> {
   if (ids.length === 0) {
     return { doneCount: 0, errorCount: 0, errors: [] };
@@ -267,11 +287,33 @@ export async function summarizeBatch(ids: string[], settings: Settings): Promise
     return { doneCount: 0, errorCount: 0, errors: ["APIキー未設定"] };
   }
 
+  const sortedIds = await sortIdsByPublishedDesc(ids);
+  const limit = Math.max(0, Math.floor(settings.maxSummariesPerRun) || 0);
+  const target = sortedIds.slice(0, limit);
+  const carriedOver = sortedIds.slice(limit);
+
+  const notices: string[] = [];
+  if (carriedOver.length > 0) {
+    notices.push(`上限 ${limit} 件に達したため ${carriedOver.length} 件を次回に繰り越しました`);
+  }
+
   const progress = await getProgress();
-  await mapLimit(ids, settings.summaryConcurrency, (id) => summarizeOne(id, settings, progress));
+  let aborted = false;
+
+  await mapLimit(target, settings.summaryConcurrency, async (id) => {
+    if (aborted) return;
+    const result = await summarizeOne(id, settings, progress);
+    if (result.billingOrAuthError) {
+      aborted = true;
+    }
+  });
+
+  if (aborted) {
+    notices.push("APIの残高不足または認証エラーのため中断しました");
+  }
 
   const db = getDb();
-  const articles = await db.articles.bulkGet(ids);
+  const articles = await db.articles.bulkGet(target);
   let doneCount = 0;
   const errors: string[] = [];
   for (const article of articles) {
@@ -279,7 +321,7 @@ export async function summarizeBatch(ids: string[], settings: Settings): Promise
     if (article.status === "done") doneCount++;
     else if (article.status === "error") errors.push(`${article.title}: ${article.error ?? "不明なエラー"}`);
   }
-  return { doneCount, errorCount: errors.length, errors };
+  return { doneCount, errorCount: errors.length, errors: [...notices, ...errors] };
 }
 
 /**
@@ -339,13 +381,52 @@ export async function resetAll(): Promise<void> {
   await saveProgress(structuredClone(IDLE_PROGRESS));
 }
 
+/**
+ * 指定ソースの記事・チャット履歴を削除し、initialized=false / listingSeenIds=[] に戻す
+ * （etag/lastModified/lastStatus/lastError/lastItemCount/lastFetchMode もクリアする）。
+ * これにより次回実行時、一覧経路は「先頭1件だけ登録」の初回バックフィルからやり直しになる。
+ * パイプライン実行中（ロック有効。running かつ startedAt から LOCK_STALE_MS 未満）は拒否する
+ * （実行中の commitListingItems が initialized=true / listingSeenIds を書き戻し、削除と競合するため）。
+ * 削除した記事数を返す。
+ */
+export async function resetSource(sourceId: string): Promise<{ ok: boolean; deleted: number; error?: string }> {
+  const progress = await loadProgress();
+  if (isLockActive(progress)) {
+    return { ok: false, deleted: 0, error: "更新の実行中は削除できません" };
+  }
+
+  const db = getDb();
+  const articleIds = (await db.articles.where("sourceId").equals(sourceId).primaryKeys()) as string[];
+
+  await db.articles.bulkDelete(articleIds);
+  if (articleIds.length > 0) {
+    await db.chats.bulkDelete(articleIds);
+  }
+
+  const source = await db.sources.get(sourceId);
+  if (source) {
+    await db.sources.update(sourceId, {
+      initialized: false,
+      listingSeenIds: [],
+      etag: undefined,
+      lastModified: undefined,
+      lastStatus: undefined,
+      lastError: undefined,
+      lastItemCount: undefined,
+      lastFetchMode: undefined,
+    });
+  }
+
+  return { ok: true, deleted: articleIds.length };
+}
+
 /** ロックを確認し、実行中でなければ running:true にして獲得する */
 async function acquireLock(trigger: PipelineTrigger): Promise<boolean> {
   const current = await loadProgress();
-  const now = Date.now();
-  if (current.running && current.startedAt !== undefined && now - current.startedAt < LOCK_STALE_MS) {
+  if (isLockActive(current)) {
     return false;
   }
+  const now = Date.now();
   await saveProgress({
     ...structuredClone(IDLE_PROGRESS),
     running: true,

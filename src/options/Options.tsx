@@ -1,8 +1,9 @@
 // 設定ページ本体。
 import { useEffect, useState } from "react";
 import type { Settings } from "../shared/types";
-import { loadSettings, saveSettings } from "../shared/settings";
-import { broadcast } from "../shared/messages";
+import { isLockActive, loadSettings, saveSettings } from "../shared/settings";
+import { broadcast, send } from "../shared/messages";
+import type { Message } from "../shared/messages";
 import { DEFAULT_SOURCES } from "../shared/sources";
 import { ApiKeyField } from "./components/ApiKeyField";
 import { ModelSelect } from "./components/ModelSelect";
@@ -10,16 +11,61 @@ import { IntervalSelect } from "./components/IntervalSelect";
 import { SourceRow } from "./components/SourceRow";
 import { DangerZone } from "./components/DangerZone";
 
+/** ロック判定に使う最小限の進捗情報 */
+type LockInfo = { running: boolean; startedAt?: number };
+
+const IDLE_LOCK_INFO: LockInfo = { running: false };
+
 export function Options() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [saving, setSaving] = useState(false);
   const [savedMessage, setSavedMessage] = useState<{ ok: boolean; text: string } | null>(null);
   // ModelSelect のカスタム入力が空でモデルIDが未確定の間は保存できない
   const [modelValid, setModelValid] = useState(true);
+  // 更新パイプラインの進捗（running / startedAt）。SW 死亡で running:true が古いまま残る
+  // ケースがあるため、これ単体ではなく isLockActive(lockInfo, now) で「削除ボタンの無効化」を判定する。
+  const [lockInfo, setLockInfo] = useState<LockInfo>(IDLE_LOCK_INFO);
+  // isLockActive の判定は現在時刻に依存するため、setInterval のたびにこれを更新して再評価を促す
+  // （lockInfo 自体は SW からの通知が無い限り変化しなくても、LOCK_STALE_MS 経過で自動的に
+  //  「実行中でない」表示へ戻すため）。
+  const [, forceRecheck] = useState(0);
 
   useEffect(() => {
     loadSettings().then(setSettings);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    send({ type: "GET_PROGRESS" })
+      .then((p) => {
+        if (!cancelled) setLockInfo({ running: p.running, startedAt: p.startedAt });
+      })
+      .catch(() => {
+        // SW がまだ起動していない等で失敗しても致命的ではない（以後の PROGRESS 通知で更新される）
+      });
+
+    // §13-4: SW からの broadcast は受信者がいなくても例外にならないよう、単純な onMessage で受信する
+    const handler = (msg: Message) => {
+      if (msg.type === "PROGRESS") {
+        setLockInfo({ running: msg.progress.running, startedAt: msg.progress.startedAt });
+      }
+      return false;
+    };
+    chrome.runtime.onMessage.addListener(handler);
+
+    // LOCK_STALE_MS 経過による失効を、新しい PROGRESS 通知が来なくても反映できるよう
+    // 1分ごとに再評価（再レンダー）する
+    const interval = setInterval(() => forceRecheck((n) => n + 1), 60_000);
+
+    return () => {
+      cancelled = true;
+      chrome.runtime.onMessage.removeListener(handler);
+      clearInterval(interval);
+    };
+  }, []);
+
+  // 表示時点の現在時刻で判定する（レンダーのたびに再計算される。isLockActive は純粋関数）
+  const resetLocked = isLockActive(lockInfo);
 
   function update<K extends keyof Settings>(key: K, value: Settings[K]) {
     setSettings((prev) => (prev ? { ...prev, [key]: value } : prev));
@@ -70,6 +116,7 @@ export function Options() {
       // 空欄・0での保存を防ぐため下限にクランプする（min属性と一致）
       maxContentChars: Math.max(1000, settings.maxContentChars || 1000),
       maxNewPerSourcePerRun: Math.max(1, settings.maxNewPerSourcePerRun || 1),
+      maxSummariesPerRun: Math.max(1, settings.maxSummariesPerRun || 1),
     };
 
     try {
@@ -152,6 +199,7 @@ export function Options() {
                   source={source}
                   enabled={settings.enabledSources.includes(source.id)}
                   feedUrlOverride={settings.feedUrlOverrides[source.id]}
+                  resetLocked={resetLocked}
                   onToggle={(enabled) => toggleSource(source.id, enabled)}
                   onUrlChange={(url) => setSourceUrl(source.id, url)}
                 />
@@ -198,6 +246,16 @@ export function Options() {
                 min={1}
                 value={settings.maxNewPerSourcePerRun}
                 onChange={(e) => update("maxNewPerSourcePerRun", Math.max(1, Number(e.target.value) || 1))}
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="maxSummaries">1回の更新あたりの最大要約数（全体）</label>
+              <input
+                id="maxSummaries"
+                type="number"
+                min={1}
+                value={settings.maxSummariesPerRun}
+                onChange={(e) => update("maxSummariesPerRun", Math.max(1, Number(e.target.value) || 1))}
               />
             </div>
           </section>

@@ -54,6 +54,12 @@ export interface ResetAllMessage {
   type: "RESET_ALL";
 }
 
+/** 設定→SW。指定ソースの記事・チャットを削除し、initialized=false / listingSeenIds=[] 等にリセットする */
+export interface ResetSourceMessage {
+  type: "RESET_SOURCE";
+  sourceId: string;
+}
+
 /** SW→ページ。進捗の変化を通知する（受信者がいなければ例外→握りつぶす） */
 export interface ProgressMessage {
   type: "PROGRESS";
@@ -75,6 +81,7 @@ export interface OffscreenExtractLinksMessage {
   html: string;
   url: string;
   pattern: string;
+  excludePattern?: string;
 }
 
 export type Message =
@@ -87,6 +94,7 @@ export type Message =
   | SettingsChangedMessage
   | OpenAppMessage
   | ResetAllMessage
+  | ResetSourceMessage
   | ProgressMessage
   | OffscreenExtractMessage
   | OffscreenExtractLinksMessage;
@@ -102,6 +110,7 @@ export interface MessageResponseMap {
   SETTINGS_CHANGED: { ok: boolean };
   OPEN_APP: { ok: boolean };
   RESET_ALL: { ok: boolean };
+  RESET_SOURCE: { ok: boolean; deleted: number; error?: string };
   PROGRESS: { ok: boolean };
   OFFSCREEN_EXTRACT: ExtractResult;
   OFFSCREEN_EXTRACT_LINKS: { items: ListingItem[] };

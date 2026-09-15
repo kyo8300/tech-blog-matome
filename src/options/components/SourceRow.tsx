@@ -1,6 +1,7 @@
 // ソース一覧の1行。有効トグル・名前・フィードURL上書き・接続テスト・代替URL採用。
 import { useState } from "react";
 import { send } from "../../shared/messages";
+import { isLockActive } from "../../shared/settings";
 import type { FeedTestResult, Source } from "../../shared/types";
 
 function formatResult(result: FeedTestResult): string {
@@ -28,16 +29,23 @@ export function SourceRow(props: {
   source: Source;
   enabled: boolean;
   feedUrlOverride: string | undefined;
+  /**
+   * 実行ロックが有効かどうか（親コンポーネントが isLockActive で判定した表示時点の値）。
+   * true の間は「このソースの記事を削除して再取得」を無効化する。
+   */
+  resetLocked: boolean;
   onToggle: (enabled: boolean) => void;
   onUrlChange: (url: string | undefined) => void;
 }) {
-  const { source, enabled, feedUrlOverride, onToggle, onUrlChange } = props;
+  const { source, enabled, feedUrlOverride, resetLocked, onToggle, onUrlChange } = props;
   const effectiveUrl = feedUrlOverride ?? source.feedUrl;
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<FeedTestResult | null>(null);
   const [tryingAlt, setTryingAlt] = useState(false);
   const [listingTesting, setListingTesting] = useState(false);
   const [listingResult, setListingResult] = useState<FeedTestResult | null>(null);
+  const [resetting, setResetting] = useState(false);
+  const [resetMessage, setResetMessage] = useState<string | null>(null);
 
   async function handleTest() {
     setTesting(true);
@@ -85,6 +93,36 @@ export function SourceRow(props: {
     }
   }
 
+  async function handleResetSource() {
+    // ボタンの disabled は直近の PROGRESS 通知（最大1分ごとの再評価）に基づく表示なので、
+    // 実際に送信する直前に GET_PROGRESS で再判定し、今まさにロックが有効なら
+    // 確認ダイアログを出さずに案内だけ表示する（SW 側の RESET_SOURCE 拒否と二重に守る）。
+    try {
+      const fresh = await send({ type: "GET_PROGRESS" });
+      if (isLockActive(fresh)) {
+        setResetMessage("更新の実行中は削除できません。完了後に再度お試しください。");
+        return;
+      }
+    } catch {
+      // 再判定に失敗しても致命的ではない（このあとの RESET_SOURCE 自体が SW 側でロックを見て拒否する）
+    }
+
+    const confirmed = window.confirm(
+      `「${source.name}」の記事・要約・チャット履歴を削除し、未取得状態に戻します。次回の更新で最新1件から取り込み直します。この操作は取り消せません。よろしいですか？`,
+    );
+    if (!confirmed) return;
+    setResetting(true);
+    setResetMessage(null);
+    try {
+      const r = await send({ type: "RESET_SOURCE", sourceId: source.id });
+      setResetMessage(r.ok ? `削除しました（${r.deleted}件）。` : `削除に失敗しました: ${r.error ?? "不明なエラー"}`);
+    } catch (err) {
+      setResetMessage(`削除に失敗しました: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setResetting(false);
+    }
+  }
+
   return (
     <div className="source-row">
       <div className="source-row-main">
@@ -114,11 +152,16 @@ export function SourceRow(props: {
             {listingTesting ? "テスト中…" : "一覧ページ抽出テスト"}
           </button>
         )}
+        <button type="button" className="danger" onClick={handleResetSource} disabled={resetting || resetLocked}>
+          {resetting ? "削除中…" : "このソースの記事を削除して再取得"}
+        </button>
       </div>
       {result && <p className={`result ${result.ok ? "ok" : "error"}`}>{formatResult(result)}</p>}
       {listingResult && (
         <p className={`result ${listingResult.ok ? "ok" : "error"}`}>{formatListingResult(listingResult)}</p>
       )}
+      {resetLocked && <p className="result">更新の実行中は削除できません。完了後に再度お試しください。</p>}
+      {resetMessage && <p className={`result ${resetMessage.startsWith("削除しました") ? "ok" : "error"}`}>{resetMessage}</p>}
     </div>
   );
 }

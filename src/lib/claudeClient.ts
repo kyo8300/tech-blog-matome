@@ -159,6 +159,21 @@ export async function testApiKey(
 }
 
 /**
+ * 課金（残高不足）または認証エラーかどうかを判定する（§8-5: パイプラインの打ち切り判定に使う）。
+ * most-specific-first の instanceof で判定し、文字列マッチは status 400 の APIError の
+ * message に "credit balance" を含むかどうかの1箇所だけに限定する。
+ */
+export function isBillingOrAuthError(err: unknown): boolean {
+  if (err instanceof Anthropic.AuthenticationError) {
+    return true;
+  }
+  if (err instanceof Anthropic.APIError) {
+    return err.status === 400 && typeof err.message === "string" && err.message.includes("credit balance");
+  }
+  return false;
+}
+
+/**
  * Anthropic SDK のエラーを日本語メッセージに変換する。
  * most-specific-first の instanceof チェーンで判定する（文字列マッチは使わない）。
  * 注: `Anthropic.APIConnectionError` は `Anthropic.APIError` のサブクラスなので、

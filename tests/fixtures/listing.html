@@ -14,6 +14,10 @@
         <li><a href="/blog/frontend/">Frontend</a></li>
       </ul>
     </nav>
+    <!-- article-looking link directly inside <header> (not inside the nav above) -->
+    <a href="/blog/header-slug/">
+      <h3>Article-Looking Link Sitting Directly Inside The Page Header</h3>
+    </a>
   </header>
 
   <main>
@@ -46,7 +50,7 @@
       <p class="excerpt">A retrospective on a two-year infrastructure project.</p>
     </div>
 
-    <!-- 4) no heading, but anchor text is long enough (>= 20 chars) -->
+    <!-- 4) no heading, but anchor text is long enough (>= 20 chars) and contains whitespace -->
     <div class="card">
       <a href="/blog/slug-delta/">Notes from running chaos experiments across every production region</a>
     </div>
@@ -83,9 +87,79 @@
     <nav class="pagination">
       <a href="/blog/engineering/?page=2">Next</a>
     </nav>
+
+    <!-- §9.5 rule 1' exclusions: each of these would otherwise pass rule 2 (heading or >=20 char text),
+         so they only get dropped if the ancestor / attribute / URL exclusion is actually implemented. -->
+    <section class="rule-1prime-exclusions">
+      <!-- category-style link living inside its own <nav>, with a heading and long text -->
+      <nav class="nav-with-heading">
+        <a href="/blog/nav-heading-slug/">
+          <h3>This Category Link Has A Heading But Must Still Be Excluded As Navigation</h3>
+        </a>
+      </nav>
+
+      <!-- article-looking link inside <footer> -->
+      <footer class="inline-footer">
+        <a href="/blog/footer-slug/">
+          <h3>Article-Looking Link Sitting Directly Inside An Inline Footer</h3>
+        </a>
+      </footer>
+
+      <!-- ARIA role=navigation -->
+      <div role="navigation" class="role-nav">
+        <a href="/blog/role-nav-slug/">
+          <h3>Article-Looking Link Inside A Role Navigation Div Must Be Excluded</h3>
+        </a>
+      </div>
+
+      <!-- ARIA role=menu -->
+      <div role="menu" class="role-menu">
+        <a href="/blog/role-menu-slug/">
+          <h3>Article-Looking Link Inside A Role Menu Div Must Also Be Excluded</h3>
+        </a>
+      </div>
+
+      <!-- hreflang alternate (locale switcher); note this URL only matches the widened
+           ES_PATTERN used by its dedicated test, not the default PATTERN -->
+      <a href="https://example.com/es/blog/some-slug/" hreflang="es">
+        <h3>Spanish Translation Of This Post Must Be Excluded Via Hreflang</h3>
+      </a>
+
+      <!-- rel=nofollow -->
+      <a href="/blog/nofollow-slug/" rel="nofollow">
+        <h3>This Link Has Rel Nofollow And Must Be Excluded</h3>
+      </a>
+
+      <!-- rel=tag -->
+      <a href="/blog/tag-slug/" rel="tag">
+        <h3>This Link Has Rel Tag And Must Be Excluded</h3>
+      </a>
+
+      <!-- listingUrl itself (baseUrl == https://example.com/blog/engineering/) -->
+      <a href="https://example.com/blog/engineering/">
+        <h3>Link Back To The Listing Page Itself Must Be Excluded</h3>
+      </a>
+
+      <!-- ancestor path of listingUrl -->
+      <a href="https://example.com/blog/">
+        <h3>Link To The Ancestor Blog Index Must Be Excluded</h3>
+      </a>
+
+      <!-- otherwise-valid article URL, but with a pagination-style page= query -->
+      <a href="/blog/slug-zeta/?page=2">
+        <h3>Pagination Style Query On An Otherwise Valid Article URL Must Be Excluded</h3>
+      </a>
+
+      <!-- rule 2(b): anchor text is >= 20 characters but contains no whitespace, so it must NOT
+           be treated as heading-less "looks like a multi-word title" text -->
+      <a href="/blog/no-space-slug/">Spanish,Español(Internacional)</a>
+    </section>
   </main>
 
   <footer>
+    <a href="/blog/footer-bottom-slug/">
+      <h3>Another Article-Looking Link Inside The Real Page Footer At The Bottom</h3>
+    </a>
     <p>&copy; 2026 Acme Corp.</p>
   </footer>
 </body>

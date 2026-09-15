@@ -10,7 +10,7 @@ import {
 } from "../shared/constants";
 import { fetchArticleHtml } from "./articleFetcher";
 import { extractViaOffscreen } from "./offscreenClient";
-import { summarizeArticle, describeApiError } from "../lib/claudeClient";
+import { summarizeArticle, describeApiError, isBillingOrAuthError } from "../lib/claudeClient";
 import type { ContentSource } from "../lib/prompts";
 import { updateProgress } from "./progress";
 
@@ -20,12 +20,24 @@ function truncateForStorage(text: string, maxChars: number): string {
   return text.length <= limit ? text : text.slice(0, limit);
 }
 
-/** article.url からページ本文を取得し、Readability で抽出した本文を返す（失敗時は空文字列） */
-async function fetchPageText(url: string): Promise<string> {
+/** ページ本文取得の結果。text が空文字列なら取得・抽出に失敗している */
+interface PageFetchResult {
+  text: string;
+  /** ExtractResult.publishedAt（§10 の探索順で見つかった公開日時） */
+  publishedAt?: number;
+}
+
+/** article.url からページ本文を取得し、Readability で抽出した本文・公開日を返す（失敗時は空文字列） */
+async function fetchPageText(url: string): Promise<PageFetchResult> {
   const html = await fetchArticleHtml(url, PAGE_FETCH_TIMEOUT_MS, PAGE_MAX_BYTES);
-  if (html === null) return "";
+  if (html === null) return { text: "" };
   const result = await extractViaOffscreen(html, url);
-  return result.text;
+  return { text: result.text, publishedAt: result.publishedAt };
+}
+
+/** summarizeOne の結果。呼び出し側（summarizeBatch）が課金・認証エラーによる打ち切り判定に使う */
+export interface SummarizeOneResult {
+  billingOrAuthError: boolean;
 }
 
 /**
@@ -45,10 +57,10 @@ export async function summarizeOne(
   settings: Settings,
   progress?: PipelineProgress,
   options?: { skipInitialTransition?: boolean },
-): Promise<void> {
+): Promise<SummarizeOneResult> {
   const db = getDb();
   const article = await db.articles.get(articleId);
-  if (!article) return;
+  if (!article) return { billingOrAuthError: false };
 
   if (!options?.skipInitialTransition) {
     await db.articles.update(articleId, { status: "summarizing", summarizingAt: Date.now(), error: undefined });
@@ -61,14 +73,23 @@ export async function summarizeOne(
     // ページ本文の取得を試み、文字数が足りなければ RSS 概要にフォールバックする
     let contentSource: ContentSource = "none";
     let text = "";
+    let pagePublishedAt: number | undefined;
     try {
-      const pageText = await fetchPageText(article.url);
-      if (pageText.length >= MIN_PAGE_TEXT_CHARS) {
+      const pageResult = await fetchPageText(article.url);
+      pagePublishedAt = pageResult.publishedAt;
+      if (pageResult.text.length >= MIN_PAGE_TEXT_CHARS) {
         contentSource = "page";
-        text = pageText;
+        text = pageResult.text;
       }
     } catch {
       // ページ取得・抽出の失敗は RSS 概要へのフォールバックとして扱う
+    }
+
+    // ページから公開日が取れ、Article.publishedAt が取得時刻の仮値（createdAt と等しい）なら更新する。
+    // 要約の成否・スキップにかかわらず、本文取得直後（この後の要約スキップ判定より前）に行う。
+    if (pagePublishedAt !== undefined && article.publishedAt === article.createdAt) {
+      await db.articles.update(articleId, { publishedAt: pagePublishedAt });
+      article.publishedAt = pagePublishedAt;
     }
 
     if (contentSource === "none") {
@@ -79,6 +100,19 @@ export async function summarizeOne(
       } else {
         text = rssSummary;
       }
+    }
+
+    // §8-5: 本文もRSS概要も無い（一覧経路など）場合は、タイトルだけの要約に課金しないよう
+    // Claude を呼ばずにスキップする
+    if (contentSource === "none" && !article.rssSummary) {
+      const current = await db.articles.get(articleId);
+      await db.articles.update(articleId, {
+        status: "error",
+        error: "本文を取得できなかったため要約をスキップしました",
+        attempts: (current?.attempts ?? 0) + 1,
+        summarizingAt: undefined,
+      });
+      return { billingOrAuthError: false };
     }
 
     const contentText = truncateForStorage(text, settings.maxContentChars);
@@ -109,6 +143,7 @@ export async function summarizeOne(
       summarizingAt: undefined,
       error: undefined,
     });
+    return { billingOrAuthError: false };
   } catch (err) {
     const current = await db.articles.get(articleId);
     await db.articles.update(articleId, {
@@ -117,6 +152,7 @@ export async function summarizeOne(
       attempts: (current?.attempts ?? 0) + 1,
       summarizingAt: undefined,
     });
+    return { billingOrAuthError: isBillingOrAuthError(err) };
   } finally {
     if (progress) {
       await updateProgress((current) => ({ articlesDone: current.articlesDone + 1 }));

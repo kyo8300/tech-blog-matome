@@ -29,6 +29,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^5.2",
+    "fake-indexeddb": "^6.2.5",
     "jsdom": "^30",
     "playwright": "^1.63",
     "tsx": "^4.23",

@@ -57,7 +57,9 @@ export const DEFAULT_SOURCES: Source[] = [
     ],
     siteUrl: "https://www.uber.com/us/en/blog/engineering/",
     listingUrl: "https://www.uber.com/us/en/blog/engineering/",
-    listingLinkPattern: "^https://www\\.uber\\.com/(?:[a-z]{2}-[A-Z]{2}/|[a-z]{2}/[a-z]{2}/)?blog/[^/]+/?$",
+    listingLinkPattern: "^https://www\\.uber\\.com/us/en/blog/[^/]+/?$",
+    listingExcludePattern:
+      "^https://www\\.uber\\.com/us/en/blog/(engineering|health|ride|eats|transit|business|earn|merchants|community|freight|safety|company|culture|data|ai|mobile|backend|web|security|research|careers|products?)/?$",
     initialized: false,
   },
   {

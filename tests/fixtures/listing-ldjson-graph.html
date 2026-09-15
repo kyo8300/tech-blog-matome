@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Acme Engineering Blog</title>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "BlogPosting",
+        "url": "https://example.com/blog/graph-alpha/",
+        "headline": "Graph LD+JSON Alpha Post Headline",
+        "datePublished": "2026-07-10T12:00:00Z"
+      },
+      {
+        "@type": "BlogPosting",
+        "url": "https://example.com/blog/graph-beta/",
+        "headline": "Graph LD+JSON Beta Post Headline",
+        "datePublished": "2026-06-01T09:15:00Z"
+      },
+      {
+        "@type": "BlogPosting",
+        "url": "https://not-example.com/other/graph-offsite/",
+        "headline": "This BlogPosting Does Not Match The URL Pattern And Must Be Dropped",
+        "datePublished": "2026-05-01T00:00:00Z"
+      },
+      {
+        "@type": "BlogPosting",
+        "url": "https://example.com/blog/graph-delta/?page=2",
+        "headline": "This BlogPosting Has A Pagination Query And Must Be Dropped By The Exclusion Rule",
+        "datePublished": "2026-04-01T00:00:00Z"
+      }
+    ]
+  }
+  </script>
+</head>
+<body>
+  <main>
+    <h1>Latest posts</h1>
+
+    <!-- Anchor-based article that must be ignored: the @graph above yields items (rule 0 wins),
+         so anchor scanning must not run even though this looks like a perfectly valid article. -->
+    <article class="post-card">
+      <a href="/blog/anchor-should-be-ignored/">
+        <h3>This Anchor-Based Article Must Be Ignored Because The LD+JSON Graph Already Won</h3>
+      </a>
+    </article>
+  </main>
+</body>
+</html>

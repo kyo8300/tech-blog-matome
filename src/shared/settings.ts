@@ -1,7 +1,7 @@
 // 設定・進捗の読み書き。shared の中で chrome.storage を使うのはこのファイルだけ（runtime メッセージングは messages.ts）。
 
 import type { PipelineProgress, Settings } from "./types";
-import { DEFAULT_SETTINGS, PROGRESS_KEY, SETTINGS_KEY } from "./constants";
+import { DEFAULT_SETTINGS, LOCK_STALE_MS, PROGRESS_KEY, SETTINGS_KEY } from "./constants";
 
 /** 進捗の初期値（アイドル状態） */
 export const IDLE_PROGRESS: PipelineProgress = {
@@ -50,4 +50,14 @@ export async function loadProgress(): Promise<PipelineProgress> {
 /** パイプライン進捗を chrome.storage.session に保存する */
 export async function saveProgress(progress: PipelineProgress): Promise<void> {
   await chrome.storage.session.set({ [PROGRESS_KEY]: progress });
+}
+
+/**
+ * 実行ロックが有効かどうか（running かつ startedAt から LOCK_STALE_MS 未満）。
+ * SW 死亡で running:true が古いまま残ったロックは無効（失効）とみなす。
+ * SW 側（acquireLock / RESET_SOURCE の拒否判定）と設定ページ（削除ボタンの無効化）が
+ * 同じ判定を共有するための純粋関数。`now` を渡さない場合は呼び出し時点の Date.now() を使う。
+ */
+export function isLockActive(progress: Pick<PipelineProgress, "running" | "startedAt">, now: number = Date.now()): boolean {
+  return progress.running && progress.startedAt !== undefined && now - progress.startedAt < LOCK_STALE_MS;
 }

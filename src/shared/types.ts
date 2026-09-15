@@ -25,6 +25,10 @@ export interface Source {
   listingUrl?: string;
   /** 一覧ページ内で記事URLとみなす正規表現（正規化後の絶対URLに対して適用） */
   listingLinkPattern?: string;
+  /** 正規化後の絶対URLがこれに一致したら記事とみなさない（カテゴリ等。§9.5 規則 1'） */
+  listingExcludePattern?: string;
+  /** 一覧経路で「見たことがある」記事ID（sha256）。新着判定に使う。最大 LISTING_SEEN_MAX 件、古いものから捨てる（§9.5） */
+  listingSeenIds?: string[];
   /** 直近の実行でどちらの経路で取得したか */
   lastFetchMode?: "feed" | "listing";
 }
@@ -94,6 +98,8 @@ export interface Settings {
   maxContentChars: number;
   /** 1回の更新あたりソースごとの最大新着数。既定値: 20 */
   maxNewPerSourcePerRun: number;
+  /** 1回の更新あたりの最大要約数（全体）。既定値: 30 */
+  maxSummariesPerRun: number;
   lastRunAt?: number;
 }
 
@@ -129,6 +135,8 @@ export interface ExtractResult {
   title?: string;
   text: string;
   excerpt?: string;
+  /** 公開日時（epoch ミリ秒）。§10 の探索順で見つかった最初の値 */
+  publishedAt?: number;
 }
 
 /** 一覧ページから抽出した記事リンク1件分（§9.5） */

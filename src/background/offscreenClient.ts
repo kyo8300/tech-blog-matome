@@ -111,10 +111,11 @@ export async function extractLinksViaOffscreen(
   html: string,
   url: string,
   pattern: string,
+  excludePattern?: string,
 ): Promise<{ items: ListingItem[] }> {
   await acquire();
   try {
-    return await send({ type: "OFFSCREEN_EXTRACT_LINKS", target: "offscreen", html, url, pattern });
+    return await send({ type: "OFFSCREEN_EXTRACT_LINKS", target: "offscreen", html, url, pattern, excludePattern });
   } finally {
     await release();
   }

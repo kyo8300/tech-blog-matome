@@ -5,16 +5,28 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { extractListingItems } from "../src/lib/listingExtract";
 import { normalizeUrl } from "../src/lib/urlNormalize";
+import { DEFAULT_SOURCES } from "../src/shared/sources";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-function fixtureDoc(): Document {
-  const html = readFileSync(path.join(__dirname, "fixtures", "listing.html"), "utf-8");
+function docFromFixture(name: string): Document {
+  const html = readFileSync(path.join(__dirname, "fixtures", name), "utf-8");
   return new DOMParser().parseFromString(html, "text/html");
+}
+
+function fixtureDoc(): Document {
+  return docFromFixture("listing.html");
 }
 
 const BASE_URL = "https://example.com/blog/engineering/";
 const PATTERN = "^https://example\\.com/blog/[^/]+/?$";
+
+// Widened patterns used only by the dedicated rule-1' tests below, where the excluded URL's
+// shape (locale-prefixed, or the listing root itself) does not fit the single-segment PATTERN
+// above. Reusing PATTERN there would make the exclusion untestable: the link would already be
+// filtered out by rule 1 (pattern mismatch), not by the rule 1' exclusion under test.
+const ES_HREFLANG_PATTERN = "^https://example\\.com/es/blog/[^/]+/?$";
+const ANCESTOR_PATTERN = "^https://example\\.com/blog/?$";
 
 describe("extractListingItems", () => {
   it("extracts only real article links, in document order, deduplicated, dropping categories/pagination/javascript/mailto/#", () => {
@@ -132,5 +144,274 @@ describe("extractListingItems", () => {
     expect(() =>
       extractListingItems(fixtureDoc(), { baseUrl: BASE_URL, pattern: "(unclosed[" }),
     ).toThrow();
+  });
+});
+
+describe("extractListingItems — rule 1' exclusions (§9.5)", () => {
+  // Every fixture link exercised in this block has a heading and/or >=20 char text, i.e. it
+  // would satisfy rule 2 on its own. It must be dropped solely because of the rule 1' check
+  // under test, not because it fails to "look like an article".
+
+  it("drops links whose ancestor is nav, header, footer, [role=navigation] or [role=menu]", () => {
+    const items = extractListingItems(fixtureDoc(), { baseUrl: BASE_URL, pattern: PATTERN });
+    const normalizedUrls = new Set(items.map((item) => normalizeUrl(item.url)));
+
+    expect(normalizedUrls.has("https://example.com/blog/nav-heading-slug")).toBe(false);
+    expect(normalizedUrls.has("https://example.com/blog/header-slug")).toBe(false);
+    expect(normalizedUrls.has("https://example.com/blog/footer-slug")).toBe(false);
+    expect(normalizedUrls.has("https://example.com/blog/footer-bottom-slug")).toBe(false);
+    expect(normalizedUrls.has("https://example.com/blog/role-nav-slug")).toBe(false);
+    expect(normalizedUrls.has("https://example.com/blog/role-menu-slug")).toBe(false);
+
+    // and the well-formed 6 articles are still exactly what's returned (nothing extra leaked in)
+    expect(normalizedUrls.size).toBe(6);
+  });
+
+  it("drops links with rel=nofollow or rel=tag", () => {
+    const items = extractListingItems(fixtureDoc(), { baseUrl: BASE_URL, pattern: PATTERN });
+    const normalizedUrls = items.map((item) => normalizeUrl(item.url));
+
+    expect(normalizedUrls).not.toContain("https://example.com/blog/nofollow-slug");
+    expect(normalizedUrls).not.toContain("https://example.com/blog/tag-slug");
+  });
+
+  it("drops a hreflang-alternate link even when the URL matches the pattern", () => {
+    const items = extractListingItems(fixtureDoc(), { baseUrl: BASE_URL, pattern: ES_HREFLANG_PATTERN });
+    // ES_HREFLANG_PATTERN only matches the /es/blog/some-slug/ link in the whole fixture, so if
+    // the hreflang exclusion works, nothing at all should come back.
+    expect(items).toEqual([]);
+  });
+
+  it("drops the listingUrl itself even though it matches the pattern and looks like an article", () => {
+    const items = extractListingItems(fixtureDoc(), { baseUrl: BASE_URL, pattern: PATTERN });
+    const normalizedUrls = items.map((item) => normalizeUrl(item.url));
+    expect(normalizedUrls).not.toContain(normalizeUrl(BASE_URL));
+  });
+
+  it("drops an ancestor path of the listingUrl", () => {
+    const items = extractListingItems(fixtureDoc(), { baseUrl: BASE_URL, pattern: ANCESTOR_PATTERN });
+    // ANCESTOR_PATTERN only matches https://example.com/blog/ (the ancestor link) in the whole
+    // fixture, so if the ancestor-path exclusion works, nothing at all should come back.
+    expect(items).toEqual([]);
+  });
+
+  it("drops a link whose query string contains page= even though the path matches the pattern", () => {
+    const items = extractListingItems(fixtureDoc(), { baseUrl: BASE_URL, pattern: PATTERN });
+    const normalizedUrls = items.map((item) => normalizeUrl(item.url));
+    expect(normalizedUrls.some((url) => url.includes("slug-zeta"))).toBe(false);
+  });
+
+  it("does not treat >=20 char anchor text with no whitespace as a multi-word title (rule 2(b))", () => {
+    const items = extractListingItems(fixtureDoc(), { baseUrl: BASE_URL, pattern: PATTERN });
+    const normalizedUrls = items.map((item) => normalizeUrl(item.url));
+    expect(normalizedUrls).not.toContain("https://example.com/blog/no-space-slug");
+  });
+});
+
+describe("extractListingItems — ld+json priority (rule 0, §9.5)", () => {
+  it("prefers an ItemList in ld+json over anchor scanning, returning only its items in order", () => {
+    const doc = docFromFixture("listing-ldjson.html");
+    const items = extractListingItems(doc, { baseUrl: BASE_URL, pattern: PATTERN });
+
+    expect(items.map((item) => normalizeUrl(item.url))).toEqual([
+      "https://example.com/blog/ld-alpha",
+      "https://example.com/blog/ld-beta",
+      "https://example.com/blog/ld-gamma",
+    ]);
+    expect(items.map((item) => item.title)).toEqual([
+      "LD JSON Alpha Post Title",
+      "LD JSON Beta Post Title",
+      "LD JSON Gamma Post Title",
+    ]);
+
+    // Anchor scanning must not have run at all: the anchor-only articles on the page must be
+    // absent, and the result must contain exactly the 3 ld+json items (no more, no fewer).
+    const normalizedUrls = items.map((item) => normalizeUrl(item.url));
+    expect(normalizedUrls).not.toContain("https://example.com/blog/anchor-should-be-ignored-1");
+    expect(normalizedUrls).not.toContain("https://example.com/blog/anchor-should-be-ignored-2");
+    expect(items).toHaveLength(3);
+  });
+
+  it("reads BlogPosting entries from an ld+json @graph, applying the pattern and rule 1' exclusions, with datePublished as epoch ms", () => {
+    const doc = docFromFixture("listing-ldjson-graph.html");
+    const items = extractListingItems(doc, { baseUrl: BASE_URL, pattern: PATTERN });
+
+    // Of the 4 BlogPosting entries in @graph: one is on a different domain (pattern mismatch),
+    // and one carries a page= query (rule 1' exclusion) — both must be dropped, leaving 2.
+    expect(items.map((item) => normalizeUrl(item.url))).toEqual([
+      "https://example.com/blog/graph-alpha",
+      "https://example.com/blog/graph-beta",
+    ]);
+    expect(items.map((item) => item.title)).toEqual([
+      "Graph LD+JSON Alpha Post Headline",
+      "Graph LD+JSON Beta Post Headline",
+    ]);
+    expect(items.map((item) => item.publishedAt)).toEqual([
+      Date.parse("2026-07-10T12:00:00Z"),
+      Date.parse("2026-06-01T09:15:00Z"),
+    ]);
+    for (const item of items) {
+      expect(typeof item.publishedAt).toBe("number");
+    }
+
+    // Anchor scanning must not have run: the anchor-only article on the page must be absent.
+    expect(items.map((item) => normalizeUrl(item.url))).not.toContain(
+      "https://example.com/blog/anchor-should-be-ignored",
+    );
+  });
+});
+
+describe("extractListingItems — excludePattern, locale variants, and Uber's real URL shape (§9.5)", () => {
+  it("drops URLs matching excludePattern even though they match pattern and look like real articles", () => {
+    const items = extractListingItems(fixtureDoc(), {
+      baseUrl: BASE_URL,
+      pattern: PATTERN,
+      excludePattern: "^https://example\\.com/blog/slug-(beta|gamma)$",
+    });
+    const normalizedUrls = items.map((item) => normalizeUrl(item.url));
+
+    expect(normalizedUrls).not.toContain("https://example.com/blog/slug-beta");
+    expect(normalizedUrls).not.toContain("https://example.com/blog/slug-gamma");
+    // Unrelated real articles are unaffected.
+    expect(normalizedUrls).toContain("https://example.com/blog/slug-alpha");
+    expect(normalizedUrls).toContain("https://example.com/blog/slug-delta");
+  });
+
+  it("drops a locale-switch URL that shares listingUrl's tail path segments but differs only in the locale prefix, even without hreflang", () => {
+    const localeBaseUrl = "https://example.com/us/en/blog/engineering/";
+    // Widened to permit a 2-segment (us/en) or 1-segment hyphenated (es-ES, lowercase language +
+    // uppercase country) locale prefix ahead of "blog/<slug>", matching the real-world Uber-style
+    // pattern shape (see sources.ts). Note the uppercase country code: a pattern requiring
+    // lowercase on both halves (e.g. "[a-z]{2}-[a-z]{2}") would reject "es-ES" outright at the
+    // rule-1 pattern-match stage, which would make this test pass for the wrong reason (pattern
+    // mismatch) instead of actually exercising the rule-1' locale-variant exclusion under test.
+    const localePattern = "^https://example\\.com/(?:[a-z]{2}-[A-Z]{2}/|[a-z]{2}/[a-z]{2}/)?blog/[^/]+/?$";
+
+    const html = `<!doctype html>
+<html lang="en">
+<body>
+  <main>
+    <a href="https://example.com/us/en/blog/scaling-our-fleet-dispatch-system/">
+      <h3>Scaling Our Fleet Dispatch System To Handle Ten Times The Load</h3>
+    </a>
+    <a href="https://example.com/es-ES/blog/engineering/">
+      <h3>Spanish Language Version Of This Listing Page Must Be Excluded</h3>
+    </a>
+  </main>
+</body>
+</html>`;
+    const doc = new DOMParser().parseFromString(html, "text/html");
+
+    const items = extractListingItems(doc, { baseUrl: localeBaseUrl, pattern: localePattern });
+    const normalizedUrls = items.map((item) => normalizeUrl(item.url));
+
+    expect(normalizedUrls).not.toContain("https://example.com/es-ES/blog/engineering");
+    expect(normalizedUrls).toContain("https://example.com/us/en/blog/scaling-our-fleet-dispatch-system");
+  });
+
+  it("keeps only the 3 real articles from an Uber-shaped listing page, using the uber source's listingLinkPattern and listingExcludePattern", () => {
+    const uberSource = DEFAULT_SOURCES.find((s) => s.id === "uber");
+    expect(uberSource?.listingUrl).toBeDefined();
+    expect(uberSource?.listingLinkPattern).toBeDefined();
+    expect(uberSource?.listingExcludePattern).toBeDefined();
+    if (!uberSource?.listingUrl || !uberSource.listingLinkPattern || !uberSource.listingExcludePattern) {
+      throw new Error("src/shared/sources.ts: uber source is missing listingUrl/listingLinkPattern/listingExcludePattern");
+    }
+
+    const doc = docFromFixture("listing-uber-like.html");
+    const items = extractListingItems(doc, {
+      baseUrl: uberSource.listingUrl,
+      pattern: uberSource.listingLinkPattern,
+      excludePattern: uberSource.listingExcludePattern,
+    });
+
+    expect(items.map((item) => normalizeUrl(item.url))).toEqual([
+      "https://www.uber.com/us/en/blog/rate-limiting-at-planet-scale-with-sharded-windows",
+      "https://www.uber.com/us/en/blog/migrating-our-dispatch-service-off-legacy-infrastructure",
+      "https://www.uber.com/us/en/blog/how-we-rebuilt-driver-matching-in-rust",
+    ]);
+  });
+});
+
+describe("extractListingItems — rule 1'' single-word category exclusion (§9.5)", () => {
+  const uberSource = DEFAULT_SOURCES.find((s) => s.id === "uber");
+  if (!uberSource?.listingUrl || !uberSource.listingLinkPattern) {
+    throw new Error("src/shared/sources.ts: uber source is missing listingUrl/listingLinkPattern");
+  }
+  const { listingUrl, listingLinkPattern } = uberSource;
+
+  it("drops a category not covered by listingExcludePattern when both its slug and its heading are a single word (e.g. /autonomous/, heading 'Autonomous')", () => {
+    const html = `<!doctype html>
+<html lang="en">
+<body>
+  <main>
+    <a href="https://www.uber.com/us/en/blog/autonomous/">
+      <h3>Autonomous</h3>
+    </a>
+    <a href="https://www.uber.com/us/en/blog/scaling-our-fleet-dispatch-system/">
+      <h3>Scaling Our Fleet Dispatch System To Handle Ten Times The Load</h3>
+    </a>
+  </main>
+</body>
+</html>`;
+    const doc = new DOMParser().parseFromString(html, "text/html");
+
+    // excludePattern is intentionally omitted so this exercises rule 1'' alone, not the
+    // per-source known-category list — "autonomous" is not in uber's listingExcludePattern.
+    const items = extractListingItems(doc, { baseUrl: listingUrl, pattern: listingLinkPattern });
+    const normalizedUrls = items.map((item) => normalizeUrl(item.url));
+
+    expect(normalizedUrls).not.toContain("https://www.uber.com/us/en/blog/autonomous");
+    // the real, hyphenated-slug article on the same page is unaffected
+    expect(normalizedUrls).toContain("https://www.uber.com/us/en/blog/scaling-our-fleet-dispatch-system");
+  });
+
+  it("keeps a real single-word-slug article whose heading is multiple words (e.g. /michelangelo/, heading \"Michelangelo: Uber's ML Platform\")", () => {
+    const html = `<!doctype html>
+<html lang="en">
+<body>
+  <main>
+    <a href="https://www.uber.com/us/en/blog/michelangelo/">
+      <h3>Michelangelo: Uber's ML Platform</h3>
+    </a>
+  </main>
+</body>
+</html>`;
+    const doc = new DOMParser().parseFromString(html, "text/html");
+
+    // Single-word slug alone must not trigger rule 1'' — the heading has whitespace, so this
+    // is a real article, not a category card.
+    const items = extractListingItems(doc, { baseUrl: listingUrl, pattern: listingLinkPattern });
+    const normalizedUrls = items.map((item) => normalizeUrl(item.url));
+
+    expect(normalizedUrls).toContain("https://www.uber.com/us/en/blog/michelangelo");
+  });
+
+  it("does not apply rule 1'' to ld+json items even when both the slug and the title are a single word", () => {
+    const html = `<!doctype html>
+<html lang="en">
+<head>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "ItemList",
+    "itemListElement": [
+      { "@type": "ListItem", "position": 1, "url": "https://www.uber.com/us/en/blog/michelangelo/", "name": "Michelangelo" }
+    ]
+  }
+  </script>
+</head>
+<body>
+  <main><h1>Latest posts</h1></main>
+</body>
+</html>`;
+    const doc = new DOMParser().parseFromString(html, "text/html");
+
+    // "Michelangelo" is a single-word slug AND a single-word ld+json name, which would be
+    // dropped by rule 1'' on the anchor path — but rule 1'' must not apply to ld+json items at all.
+    const items = extractListingItems(doc, { baseUrl: listingUrl, pattern: listingLinkPattern });
+    const normalizedUrls = items.map((item) => normalizeUrl(item.url));
+
+    expect(normalizedUrls).toContain("https://www.uber.com/us/en/blog/michelangelo");
   });
 });
